@@ -16,37 +16,34 @@ MusicDiff keeps your music libraries in sync across Spotify and Apple Music with
 
 ## Quick Start
 
-### Installation
+### One-Command Setup 🚀
 
 ```bash
-# Clone the repository
-git clone https://github.com/MarcoMartignone/MusicDiff.git
-cd MusicDiff
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Install MusicDiff
-pip install -e .
+./setup
 ```
 
-### Setup
+This **interactive wizard** will:
+1. ✅ Guide you step-by-step through creating Spotify API credentials
+2. ✅ Optionally set up Apple Music (requires Apple Developer account)
+3. ✅ Test your credentials automatically
+4. ✅ Save everything to `.env` file
+5. ✅ Get you ready to sync in 5 minutes!
 
-1. **Initialize MusicDiff**
+No need to read documentation or manually configure anything - just follow the prompts!
+
+### After Setup
 
 ```bash
+# Load credentials
+source .env
+
+# Activate virtual environment
+source venv/bin/activate
+
+# Initialize database
 musicdiff init
-```
 
-This will:
-- Create local database at `~/.musicdiff/musicdiff.db`
-- Prompt you to authenticate with Spotify (opens browser)
-- Prompt you to authenticate with Apple Music
-- Fetch your initial library state
-
-2. **Check Status**
-
-```bash
+# Check your setup
 musicdiff status
 ```
 
@@ -111,33 +108,22 @@ MusicDiff uses a **3-way merge algorithm** similar to Git:
 
 ## Configuration
 
-### Spotify Setup
+### Easy Setup (Recommended)
 
-1. Go to [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
-2. Create a new app
-3. Add redirect URI: `http://localhost:8888/callback`
-4. Copy Client ID and Client Secret
-5. Add to `~/.musicdiff/config.yaml`:
+Just run `./setup` and follow the wizard! It handles everything automatically.
 
-```yaml
-spotify:
-  client_id: "your_client_id"
-  client_secret: "your_client_secret"
-```
+### Manual Setup
 
-### Apple Music Setup
+If you prefer to set up manually, see `SETUP.md` for detailed instructions.
 
-1. Join [Apple Developer Program](https://developer.apple.com/programs/) ($99/year)
-2. Create a MusicKit identifier
-3. Generate a private key (.p8 file)
-4. Add to `~/.musicdiff/config.yaml`:
+**Required:**
+- Spotify Client ID & Secret (free, 5 minutes)
+- Redirect URI: `https://localhost:8888/callback`
 
-```yaml
-apple_music:
-  team_id: "YOUR_TEAM_ID"
-  key_id: "YOUR_KEY_ID"
-  private_key_path: "~/.musicdiff/apple_music_key.p8"
-```
+**Optional:**
+- Apple Music credentials (requires $99/year Apple Developer account)
+
+All credentials go in a `.env` file in the project directory.
 
 ## Architecture
 
