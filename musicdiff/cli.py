@@ -41,6 +41,7 @@ def get_spotify_client() -> SpotifyClient:
     # Get credentials from environment or config
     client_id = os.environ.get('SPOTIFY_CLIENT_ID')
     client_secret = os.environ.get('SPOTIFY_CLIENT_SECRET')
+    redirect_uri = os.environ.get('SPOTIFY_REDIRECT_URI', 'http://localhost:8888/callback')
 
     if not client_id or not client_secret:
         console.print("[red]Error: Spotify credentials not found.[/red]")
@@ -48,7 +49,7 @@ def get_spotify_client() -> SpotifyClient:
         console.print("Or run 'musicdiff init' to configure")
         sys.exit(1)
 
-    client = SpotifyClient(client_id, client_secret)
+    client = SpotifyClient(client_id, client_secret, redirect_uri)
 
     # Authenticate
     if not client.authenticate():
@@ -421,6 +422,7 @@ def config(key, value):
             console.print("\nSpotify:")
             console.print("  SPOTIFY_CLIENT_ID")
             console.print("  SPOTIFY_CLIENT_SECRET")
+            console.print("  SPOTIFY_REDIRECT_URI (optional, default: http://localhost:8888/callback)")
             console.print("\nApple Music:")
             console.print("  APPLE_TEAM_ID")
             console.print("  APPLE_KEY_ID")
