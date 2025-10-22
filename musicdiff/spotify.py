@@ -74,9 +74,9 @@ class SpotifyClient:
         self.client_secret = client_secret
         self.redirect_uri = redirect_uri
 
-        # Set default cache path
+        # Set default cache path - use project directory in Documents
         if cache_path is None:
-            cache_dir = os.path.expanduser('~/.musicdiff')
+            cache_dir = os.path.expanduser('~/Documents/MusicDiff/.musicdiff')
             os.makedirs(cache_dir, exist_ok=True)
             cache_path = os.path.join(cache_dir, '.spotify_cache')
 

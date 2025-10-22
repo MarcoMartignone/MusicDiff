@@ -28,8 +28,8 @@ class SyncDaemon:
         self.interval = interval
         self.running = False
 
-        # Setup paths
-        self.config_dir = Path.home() / '.musicdiff'
+        # Setup paths - use project directory in Documents
+        self.config_dir = Path.home() / 'Documents' / 'MusicDiff' / '.musicdiff'
         self.config_dir.mkdir(parents=True, exist_ok=True)
 
         self.pid_file = self.config_dir / 'daemon.pid'

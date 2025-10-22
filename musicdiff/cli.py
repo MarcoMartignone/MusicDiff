@@ -23,7 +23,8 @@ console = Console()
 
 def get_config_dir() -> Path:
     """Get MusicDiff configuration directory."""
-    config_dir = Path.home() / '.musicdiff'
+    # Use project directory in Documents instead of home
+    config_dir = Path.home() / 'Documents' / 'MusicDiff' / '.musicdiff'
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir
 
@@ -178,7 +179,7 @@ def status():
     db = Database(str(db_path))
 
     # Get last sync info
-    logs = db.get_sync_log(limit=1)
+    logs = db.get_sync_history(limit=1)
     if logs:
         last_sync = logs[0]
         console.print(f"Last Sync: {last_sync['timestamp']}")
@@ -298,7 +299,7 @@ def log(limit, verbose):
     console.print("[bold]Sync History[/bold]\n")
 
     db = get_database()
-    logs = db.get_sync_log(limit=limit)
+    logs = db.get_sync_history(limit=limit)
 
     if not logs:
         console.print("[dim]No sync history yet[/dim]")
@@ -407,7 +408,7 @@ def config(key, value):
         musicdiff config sync.auto_accept_non_conflicts     # Get value
         musicdiff config sync.schedule_interval 43200       # Set value
     """
-    config_file = Path.home() / '.musicdiff' / 'config.yaml'
+    config_file = get_config_dir() / 'config.yaml'
 
     if not key:
         # Show all config
