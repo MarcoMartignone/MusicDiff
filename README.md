@@ -19,7 +19,8 @@ MusicDiff keeps your music libraries in sync across Spotify and Apple Music with
 ### One-Command Setup 🚀
 
 ```bash
-./setup
+source venv/bin/activate
+musicdiff setup
 ```
 
 This **interactive wizard** will:
@@ -35,16 +36,13 @@ No need to read documentation or manually configure anything - just follow the p
 
 ```bash
 # Load credentials
-source .env
-
-# Activate virtual environment
-source venv/bin/activate
+source ~/Documents/MusicDiff/.musicdiff/.env
 
 # Initialize database
 musicdiff init
 
-# Check your setup
-musicdiff status
+# Start syncing!
+musicdiff sync
 ```
 
 ### Usage
