@@ -86,8 +86,6 @@ class UI:
             checkbox_kwargs = {
                 "choices": choices,
                 "style": custom_style,
-                "use_indicator": True,
-                "use_shortcuts": False,
                 "instruction": "(Use arrow keys to move, SPACE to select, ENTER to confirm)"
             }
 
