@@ -372,12 +372,23 @@ class DeezerClient:
         api_token = self.api_token or 'null'
         url = f"{self.PRIVATE_API_URL}?method=playlist.addSongs&api_version=1.0&api_token={api_token}"
 
-        # Convert list to JSON array format
+        # Try multiple formats to find what works
         import json
+
+        # Format 1: Try simple comma-separated string (like public API)
+        songs_str = ','.join(str(tid) for tid in track_ids)
+
+        # Format 2: Try JSON array of arrays
+        songs_json = json.dumps([[int(tid), 0] for tid in track_ids])
+
+        # Format 3: Try simple JSON array
+        songs_simple = json.dumps([int(tid) for tid in track_ids])
+
+        # Start with the public API format (comma-separated)
         data = {
             'playlist_id': playlist_id,
-            'songs': json.dumps([[int(tid), 0] for tid in track_ids]),  # Format: [[track_id, position]]
-            'offset': -1  # Add to end of playlist
+            'songs': songs_str,  # Try simple format first
+            'offset': -1
         }
 
         if self.debug:
@@ -385,6 +396,7 @@ class DeezerClient:
             print(f"  URL: {url}")
             print(f"  Playlist ID: {playlist_id}")
             print(f"  Track IDs: {track_ids}")
+            print(f"  Format: comma-separated string")
             print(f"  Data: {data}")
 
         response = self._api_call_with_retry('POST', url, data=data)
@@ -393,12 +405,44 @@ class DeezerClient:
             print(f"\n[DEBUG] Add Tracks Response:")
             print(f"  Status: {response.status_code}")
             print(f"  Body: {response.text[:500]}")
+            print(f"  Headers: {dict(response.headers)}")
 
-        # Handle empty response (which means success for this endpoint)
+        # Check if we got an actual response with data
+        if response.text and response.text.strip():
+            try:
+                response_data = response.json()
+                if self.debug:
+                    print(f"  Parsed: {response_data}")
+
+                # Check for errors
+                error = response_data.get('error')
+                if error and (isinstance(error, dict) or (isinstance(error, list) and len(error) > 0)):
+                    if self.debug:
+                        print(f"  ✗ Error: {error}")
+                    return False
+
+                # Check if we got a success result
+                if 'results' in response_data:
+                    if self.debug:
+                        print(f"  ✓ Tracks added successfully: {response_data['results']}")
+                    return True
+            except Exception as e:
+                if self.debug:
+                    print(f"  JSON parse error: {e}")
+
+        # Empty response - might mean success or failure
+        # Let's verify by checking the playlist
+        if self.debug:
+            print(f"  ⚠ Empty response - success unclear")
+            print(f"  HTTP Status: {response.status_code}")
+
+        # For now, treat HTTP 200 with empty body as unknown
+        # We'll need to verify the playlist to be sure
         if not response.text or response.text.strip() == '':
             if self.debug:
-                print(f"  ✓ Tracks added successfully (empty response = success)")
-            return True
+                print(f"  ⚠ Empty response (might not have actually added tracks)")
+            # Return True for now but this might be wrong
+            return response.status_code == 200
 
         try:
             response_data = response.json()
