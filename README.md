@@ -8,7 +8,9 @@ MusicDiff keeps your Spotify playlists synced to Deezer. Select which playlists 
 
 - **One-Way Sync**: Spotify → Deezer playlist transfer
 - **Playlist Selection**: Choose which Spotify playlists to sync
-- **Automatic Updates**: Keep Deezer playlists in sync with Spotify changes
+- **Smart Sync**: Automatically detects when playlists are already in sync and skips unnecessary updates
+- **No Duplicates**: Finds and reuses existing Deezer playlists instead of creating duplicates
+- **Accurate Preview**: Shows exactly what will happen before you confirm
 - **Full Overwrite**: Deezer playlists mirror Spotify playlists exactly
 - **Smart Track Matching**: ISRC-based track matching across platforms
 - **Clean Deselection**: Remove playlists from Deezer when deselected
@@ -79,10 +81,14 @@ musicdiff sync --dry-run
 ```
 
 **What happens during sync:**
-- Selected playlists are created on Deezer (if they don't exist)
-- Existing Deezer playlists are updated to match Spotify exactly (full overwrite)
-- Deselected playlists are deleted from Deezer
-- All tracks are matched using ISRC codes
+- Checks if playlists exist on Deezer (finds existing ones by name to avoid duplicates)
+- Compares Spotify vs Deezer track lists to detect changes
+- If playlists are already identical: Skips sync entirely (nothing to do!)
+- If changes detected:
+  - Creates playlists on Deezer (if they don't exist) as **private playlists**
+  - Updates existing Deezer playlists to match Spotify exactly (full overwrite)
+  - Deselected playlists are deleted from Deezer
+- All tracks are matched using ISRC codes (International Standard Recording Code)
 
 ### View Status
 
@@ -96,21 +102,34 @@ musicdiff log
 
 ## How It Works
 
-MusicDiff performs a simple one-way sync from Spotify to Deezer:
+MusicDiff performs an intelligent one-way sync from Spotify to Deezer:
 
 ```
-1. Fetch selected playlists from Spotify
-2. For each selected playlist:
-   - If playlist exists on Deezer: Update it (full overwrite)
-   - If playlist doesn't exist: Create it
-3. Delete deselected playlists from Deezer
-4. Update local database
+1. Check playlist status on Deezer
+   - Verify if playlists exist (by database ID)
+   - If deleted, search for existing playlist with same name
+   - Avoid creating duplicates
+
+2. Compare playlists (if only updates pending)
+   - Fetch both Spotify and Deezer versions
+   - Compare track counts (fast check)
+   - Compare ISRCs in order (accurate check)
+   - Skip if playlists are already identical
+
+3. For each playlist needing changes:
+   - If playlist doesn't exist: Create it (as private playlist)
+   - If playlist exists: Update it (full overwrite)
+
+4. Delete deselected playlists from Deezer
+
+5. Update local database with sync mappings
 ```
 
 **Track Matching:**
-- Uses ISRC (International Standard Recording Code) for accurate matching
+- Uses ISRC (International Standard Recording Code) for accurate cross-platform matching
 - Searches Deezer for matching track by ISRC
-- Skips tracks without ISRC codes
+- Caches successful matches in database for faster future syncs
+- Skips tracks without ISRC codes (reports as unmatched)
 
 ## Configuration
 
@@ -206,9 +225,12 @@ MusicDiff/
 ## Roadmap
 
 - [x] Basic Spotify integration
-- [x] Deezer integration
-- [x] One-way playlist sync
+- [x] Deezer integration (private API with ARL authentication)
+- [x] One-way playlist sync with full overwrite
 - [x] Interactive playlist selection
+- [x] Smart sync (skip when already in sync)
+- [x] Duplicate prevention (find and reuse existing playlists)
+- [x] Accurate sync preview
 - [ ] Daemon mode for automatic syncs
 - [ ] Web UI for visualization
 - [ ] Support for liked songs sync
@@ -219,10 +241,11 @@ MusicDiff/
 
 1. **Playlists Only**: Currently only syncs playlists (not liked songs or albums)
 2. **One-Way Sync**: Changes on Deezer are not synced back to Spotify
-3. **Deezer ARL Token**: May expire and require periodic re-extraction from browser
+3. **Deezer ARL Token**: Uses browser cookie for authentication; may expire and require periodic re-extraction
 4. **Track Matching**: Not all tracks have ISRC codes; tracks without ISRC are skipped
 5. **Rate Limits**: API rate limits may slow down large library syncs
 6. **Regional Availability**: Tracks may not be available in all regions on all platforms
+7. **Private Playlists Only**: Creates playlists as private on Deezer for reliability
 
 ## Contributing
 

@@ -13,31 +13,56 @@ The Sync module (`sync.py`) orchestrates the one-way synchronization process fro
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 2. Fetch from Spotify                    │
+│ 2. Check Playlist Status on Deezer      │
+│    - Verify if playlists exist by ID     │
+│    - If deleted, search by name          │
+│    - Determine create vs update          │
+│    - Avoid duplicate creation            │
+└────────────────┬────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
+│ 3. Compare Playlists (Smart Skip)       │
+│    - Fetch Spotify & Deezer versions     │
+│    - Compare track counts (fast check)   │
+│    - Compare ISRCs in order              │
+│    - Skip if already identical           │
+└────────────────┬────────────────────────┘
+                 │
+                 │ If nothing to do: Exit with success
+                 │ If changes detected: Continue
+                 │
+┌────────────────▼────────────────────────┐
+│ 4. Show Preview & Get Confirmation      │
+│    - Display accurate create/update list │
+│    - Ask user to proceed                 │
+└────────────────┬────────────────────────┘
+                 │
+┌────────────────▼────────────────────────┐
+│ 5. Fetch from Spotify                   │
 │    - Get complete playlist data          │
 │    - Include all tracks with ISRC        │
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 3. Match Tracks to Deezer                │
+│ 6. Match Tracks to Deezer               │
 │    - Search Deezer by ISRC               │
 │    - Cache matches in database           │
 │    - Skip tracks without ISRC            │
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 4. Apply to Deezer                       │
-│    - Create new playlists                │
+│ 7. Apply to Deezer                      │
+│    - Create new playlists (private)      │
 │    - Update existing (full overwrite)    │
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 5. Clean Deselected                     │
+│ 8. Clean Deselected                     │
 │    - Delete playlists no longer selected │
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 6. Update Database                       │
+│ 9. Update Database                      │
 │    - Mark playlists as synced            │
 │    - Update sync timestamps              │
 │    - Log sync results                    │
@@ -129,7 +154,118 @@ Retrieves playlists marked as `selected=1` in the `playlist_selections` table.
 
 ---
 
-### Step 2: Fetch from Spotify
+### Step 2: Check Playlist Status on Deezer
+
+```python
+# For each selected playlist, verify existence and find duplicates
+for playlist_info in selected:
+    synced = self.db.get_synced_playlist(spotify_id)
+
+    if synced:
+        playlist_exists = self._check_deezer_playlist_exists(synced['deezer_id'])
+
+        if playlist_exists:
+            # Will update existing
+            to_update.append((name, track_count, synced['deezer_id']))
+        else:
+            # Synced playlist deleted - search for existing with same name
+            existing_id = self._find_existing_deezer_playlist(name)
+            if existing_id:
+                to_update.append((name, track_count, existing_id))
+            else:
+                to_create.append((name, track_count))
+    else:
+        # Not synced - check if playlist already exists by name
+        existing_id = self._find_existing_deezer_playlist(name)
+        if existing_id:
+            # Found existing - reuse it to avoid duplicates
+            to_update.append((name, track_count, existing_id))
+        else:
+            to_create.append((name, track_count))
+```
+
+**Key Features:**
+- **Duplicate Prevention**: Searches Deezer by name before creating
+- **Smart Recovery**: If mapped playlist deleted, finds another with same name
+- **Accurate Preview**: Knows exactly what will be created vs updated
+
+**Benefits:**
+- No duplicate "My Playlist", "My Playlist (2)", "My Playlist (3)"
+- Recovers from manual deletions on Deezer
+- User sees accurate preview before confirming
+
+---
+
+### Step 3: Compare Playlists (Smart Skip)
+
+```python
+# Only compare if we're just updating (no creates/deletes)
+if to_update and not to_create and not to_delete:
+    for name, track_count, deezer_id in to_update:
+        spotify_playlist = fetch_spotify_playlist(name)
+        deezer_playlist = fetch_deezer_playlist(deezer_id)
+
+        # Fast check: track count
+        if len(spotify_playlist.tracks) != len(deezer_playlist.tracks):
+            actually_need_update.append((name, track_count, deezer_id))
+            continue
+
+        # Accurate check: ISRC comparison
+        spotify_isrcs = [t.isrc for t in spotify_playlist.tracks if t.isrc]
+        deezer_isrcs = [t.isrc for t in deezer_playlist.tracks if t.isrc]
+
+        if spotify_isrcs != deezer_isrcs:
+            actually_need_update.append((name, track_count, deezer_id))
+        # else: Identical - skip this playlist
+
+    to_update = actually_need_update
+
+# If nothing to do, exit successfully
+if not to_create and not to_update and not to_delete:
+    print("✓ All playlists are already in sync! Nothing to do.")
+    return success_result
+```
+
+**Smart Skip Benefits:**
+- Saves time when running sync repeatedly
+- Avoids unnecessary API calls
+- Perfect for cron jobs / scheduled syncs
+- User knows immediately if sync is needed
+
+**Comparison Logic:**
+1. **Fast Check**: Compare track counts (O(1))
+2. **Accurate Check**: Compare ISRCs in order (O(n))
+3. **Skip if identical**: No API calls needed
+
+---
+
+### Step 4: Show Preview & Get Confirmation
+
+```
+🔍 Checking playlist status on Deezer...
+📊 Comparing playlists to detect changes...
+
+╭───────────────────────────────────────╮
+│ 🔄 Sync Preview                       │
+╰───────────────────────────────────────╯
+
+✓ Will Create on Deezer (1 playlists):
+  + Summer Vibes 2025 (45 tracks)
+
+🔄 Will Update on Deezer (2 playlists):
+  ~ Workout Mix (32 tracks)
+  ~ Party Hits (67 tracks)
+
+Summary: 3 playlists affected, ~144 tracks to sync
+
+Proceed with sync? [y/n] (y):
+```
+
+User sees **exactly** what will happen before confirming.
+
+---
+
+### Step 5: Fetch from Spotify
 
 ```python
 spotify_playlists = self._fetch_spotify_playlists(playlist_ids)
@@ -185,20 +321,25 @@ For each Spotify track:
 
 ---
 
-### Step 4: Apply to Deezer
+### Step 7: Apply to Deezer
 
-For each selected playlist:
+For each playlist needing changes:
 
 #### Create New Playlist
 
 ```python
-if not synced:
+if not synced or not playlist_exists:
     deezer_id = self._create_deezer_playlist(spotify_playlist)
 ```
 
-1. Create playlist on Deezer with same name/description
+1. Create **private playlist** on Deezer with same name/description
 2. Add matched tracks to new playlist
 3. Save Deezer playlist ID to database
+
+**Important:** Always creates **private playlists** (`status: 0`) to ensure:
+- Playlist is owned by the user
+- Appears reliably in user's library
+- Can be fetched by ID consistently
 
 #### Update Existing Playlist (Full Overwrite)
 

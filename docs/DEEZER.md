@@ -37,13 +37,17 @@ export DEEZER_ARL="your_arl_token_here"
 client = DeezerClient(arl_token=os.getenv('DEEZER_ARL'))
 if client.authenticate():
     print(f"Authenticated as user ID: {client.user_id}")
+    print(f"CSRF Token: {client.api_token}")
 ```
 
 The client:
 1. Sets ARL cookie in session
 2. Calls `deezer.getUserData` API method
 3. Extracts user ID from response
-4. Stores user ID for subsequent requests
+4. **Extracts CSRF token (`checkForm`)** from response - required for write operations
+5. Stores user ID and CSRF token for subsequent requests
+
+**Important:** The CSRF token (`checkForm`) is required for all write operations (create, update, delete). It's automatically extracted during authentication and used in subsequent API calls.
 
 ## API Endpoints
 
@@ -91,7 +95,7 @@ GET /ajax/gw-light.php
 deezer_id = client.create_playlist(
     name="My Playlist",
     description="Synced from Spotify",
-    public=True
+    public=False  # Always creates private playlists for reliability
 )
 ```
 
@@ -100,23 +104,24 @@ deezer_id = client.create_playlist(
 POST /ajax/gw-light.php
   ?method=playlist.create
   &api_version=1.0
-  &api_token={token}
-Body: {
-  "title": "My Playlist",
-  "description": "Synced from Spotify",
-  "status": 1,  # 1=public, 0=private
-  "songs": []
-}
+  &api_token={csrf_token}
+Body (form-encoded):
+  title: "My Playlist"
+  description: "Synced from Spotify"
+  status: 0     # 0=private, 1=public
+  type: 0       # 0=playlist
 ```
 
 **Returns:** New playlist ID (string)
+
+**Note:** MusicDiff always creates **private playlists** (`status: 0`) to ensure they're owned by the user and reliably accessible. Public playlists may not appear in the user's library consistently.
 
 ### Add Tracks to Playlist
 
 ```python
 client.add_tracks_to_playlist(
     playlist_id="123456789",
-    track_ids=["track1", "track2", "track3"]
+    track_ids=["686068732", "374479411"]
 )
 ```
 
@@ -125,21 +130,34 @@ client.add_tracks_to_playlist(
 POST /ajax/gw-light.php
   ?method=playlist.addSongs
   &api_version=1.0
-  &api_token={token}
-Body: {
+  &api_token={csrf_token}
+Content-Type: application/json
+
+Body (JSON):
+{
   "playlist_id": "123456789",
-  "songs": [["track1", 0], ["track2", 1], ["track3", 2]]
+  "songs": [[686068732, 0], [374479411, 0]],
+  "offset": -1
 }
 ```
 
-Tracks are added with position indices.
+**Critical:** The request must be sent as **JSON body** (not form-encoded). The `songs` parameter is an array of arrays where:
+- First element: Track ID (integer)
+- Second element: Position index (always 0 in our implementation)
+
+**Response on Success:**
+```json
+{"error":[],"results":true}
+```
+
+Empty `error` array means success. Non-empty error array or error object indicates failure.
 
 ### Remove Tracks from Playlist
 
 ```python
 client.remove_tracks_from_playlist(
     playlist_id="123456789",
-    track_ids=["track1", "track2"]
+    track_ids=["686068732", "374479411"]
 )
 ```
 
@@ -148,12 +166,18 @@ client.remove_tracks_from_playlist(
 POST /ajax/gw-light.php
   ?method=playlist.deleteSongs
   &api_version=1.0
-  &api_token={token}
-Body: {
+  &api_token={csrf_token}
+Content-Type: application/json
+
+Body (JSON):
+{
   "playlist_id": "123456789",
-  "songs": [["track1", 0], ["track2", 0]]
+  "songs": [[686068732, 0], [374479411, 0]],
+  "offset": -1
 }
 ```
+
+**Note:** Uses same format as `addSongs` - JSON body with array of arrays.
 
 ### Delete Playlist
 
@@ -217,6 +241,41 @@ class Playlist:
 ```
 
 ## Error Handling
+
+### Error Response Format
+
+Deezer's private API returns errors in a specific format:
+
+**Success Response:**
+```json
+{
+  "error": [],        // Empty array = success
+  "results": true     // or data
+}
+```
+
+**Error Response:**
+```json
+{
+  "error": {
+    "VALID_TOKEN_REQUIRED": "Invalid CSRF token"
+  },
+  "results": {}
+}
+```
+
+or
+
+```json
+{
+  "error": {
+    "ERROR_DATA_EXISTS": "This song already exists in this playlist"
+  },
+  "results": {}
+}
+```
+
+**Important:** An empty `error` array `[]` means **success**, not failure. Only check for errors if the array/object contains actual error data.
 
 ### Rate Limiting
 
