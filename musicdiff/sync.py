@@ -177,23 +177,47 @@ class SyncEngine:
                                     f"{match_stats['matched']}/{match_stats['total']} tracks matched"
                                 )
                         else:
-                            # Create new Deezer playlist
-                            deezer_id, match_stats = self._create_deezer_playlist(sp_playlist, progress)
-                            # Track it in database
-                            self.db.upsert_synced_playlist(
-                                spotify_id=sp_playlist.spotify_id,
-                                deezer_id=deezer_id,
-                                name=sp_playlist.name,
-                                track_count=len(sp_playlist.tracks)
-                            )
-                            created += 1
+                            # Check if playlist with same name already exists on Deezer
+                            existing_deezer_id = self._find_existing_deezer_playlist(sp_playlist.name)
 
-                            # Show match statistics
-                            if match_stats:
-                                self.ui.print_success(
-                                    f"Created: {sp_playlist.name} - "
-                                    f"{match_stats['matched']}/{match_stats['total']} tracks matched"
+                            if existing_deezer_id:
+                                # Reuse existing playlist
+                                self.ui.print_info(f"Found existing playlist '{sp_playlist.name}' on Deezer - reusing it")
+                                match_stats = self._update_deezer_playlist(existing_deezer_id, sp_playlist, progress)
+
+                                # Track it in database
+                                self.db.upsert_synced_playlist(
+                                    spotify_id=sp_playlist.spotify_id,
+                                    deezer_id=existing_deezer_id,
+                                    name=sp_playlist.name,
+                                    track_count=len(sp_playlist.tracks)
                                 )
+                                updated += 1
+
+                                # Show match statistics
+                                if match_stats:
+                                    self.ui.print_success(
+                                        f"Updated: {sp_playlist.name} - "
+                                        f"{match_stats['matched']}/{match_stats['total']} tracks matched"
+                                    )
+                            else:
+                                # Create new Deezer playlist
+                                deezer_id, match_stats = self._create_deezer_playlist(sp_playlist, progress)
+                                # Track it in database
+                                self.db.upsert_synced_playlist(
+                                    spotify_id=sp_playlist.spotify_id,
+                                    deezer_id=deezer_id,
+                                    name=sp_playlist.name,
+                                    track_count=len(sp_playlist.tracks)
+                                )
+                                created += 1
+
+                                # Show match statistics
+                                if match_stats:
+                                    self.ui.print_success(
+                                        f"Created: {sp_playlist.name} - "
+                                        f"{match_stats['matched']}/{match_stats['total']} tracks matched"
+                                    )
 
                         # Mark as synced
                         self.db.mark_playlist_synced(sp_playlist.spotify_id)
@@ -296,11 +320,11 @@ class SyncEngine:
         Returns:
             Tuple of (Deezer playlist ID, match statistics dict)
         """
-        # Create playlist
+        # Create playlist (always private to ensure it's in user's library)
         deezer_id = self.deezer.create_playlist(
             name=spotify_playlist.name,
             description=spotify_playlist.description,
-            public=spotify_playlist.public
+            public=False  # Always create private playlists to ensure they're accessible
         )
 
         # Add tracks
@@ -330,19 +354,37 @@ class SyncEngine:
         playlist_exists = self._check_deezer_playlist_exists(deezer_id)
 
         if not playlist_exists:
-            # Playlist was deleted from Deezer - recreate it
-            self.ui.print_warning(f"Playlist '{spotify_playlist.name}' no longer exists on Deezer - recreating...")
-            new_deezer_id, match_stats = self._create_deezer_playlist(spotify_playlist, progress)
+            # Playlist was deleted or doesn't exist - check if another playlist with same name exists
+            existing_deezer_id = self._find_existing_deezer_playlist(spotify_playlist.name)
 
-            # Update the database with new Deezer ID
-            self.db.upsert_synced_playlist(
-                spotify_id=spotify_playlist.spotify_id,
-                deezer_id=new_deezer_id,
-                name=spotify_playlist.name,
-                track_count=len(spotify_playlist.tracks)
-            )
+            if existing_deezer_id:
+                # Found existing playlist with same name - reuse it
+                self.ui.print_info(f"Found existing playlist '{spotify_playlist.name}' on Deezer - reusing it")
 
-            return match_stats
+                # Update the database with the found Deezer ID
+                self.db.upsert_synced_playlist(
+                    spotify_id=spotify_playlist.spotify_id,
+                    deezer_id=existing_deezer_id,
+                    name=spotify_playlist.name,
+                    track_count=len(spotify_playlist.tracks)
+                )
+
+                # Now update that playlist
+                return self._update_deezer_playlist(existing_deezer_id, spotify_playlist, progress)
+            else:
+                # No existing playlist found - create new one
+                self.ui.print_warning(f"Playlist '{spotify_playlist.name}' no longer exists on Deezer - creating new one...")
+                new_deezer_id, match_stats = self._create_deezer_playlist(spotify_playlist, progress)
+
+                # Update the database with new Deezer ID
+                self.db.upsert_synced_playlist(
+                    spotify_id=spotify_playlist.spotify_id,
+                    deezer_id=new_deezer_id,
+                    name=spotify_playlist.name,
+                    track_count=len(spotify_playlist.tracks)
+                )
+
+                return match_stats
 
         # Playlist exists - do full overwrite
         # First, get current tracks
@@ -374,8 +416,44 @@ class SyncEngine:
 
         return match_stats
 
+    def _find_existing_deezer_playlist(self, name: str) -> str:
+        """Find a Deezer playlist by name.
+
+        Args:
+            name: Playlist name to search for
+
+        Returns:
+            Deezer playlist ID if found, None otherwise
+        """
+        try:
+            # Fetch metadata for all playlists
+            playlists = self.deezer.fetch_library_playlists_metadata()
+
+            # Debug: show what playlists we found
+            import os
+            if os.environ.get('DEBUG'):
+                print(f"\n[DEBUG] Looking for playlist: '{name}'")
+                print(f"[DEBUG] Found {len(playlists)} playlists on Deezer:")
+                for p in playlists[:10]:  # Show first 10
+                    print(f"  - '{p['title']}' (ID: {p['id']})")
+
+            # Look for exact name match
+            for p in playlists:
+                if p['title'].strip().lower() == name.strip().lower():
+                    if os.environ.get('DEBUG'):
+                        print(f"[DEBUG] ✓ Found match: {p['id']}")
+                    return str(p['id'])
+
+            if os.environ.get('DEBUG'):
+                print(f"[DEBUG] ✗ No match found")
+            return None
+        except Exception as e:
+            if os.environ.get('DEBUG'):
+                print(f"[DEBUG] Exception in _find_existing_deezer_playlist: {e}")
+            return None
+
     def _check_deezer_playlist_exists(self, deezer_id: str) -> bool:
-        """Check if a Deezer playlist exists (fast metadata check).
+        """Check if a Deezer playlist exists.
 
         Args:
             deezer_id: Deezer playlist ID
@@ -383,11 +461,24 @@ class SyncEngine:
         Returns:
             True if playlist exists, False otherwise
         """
+        import os
         try:
-            # Fast check - just fetch metadata, not tracks
-            playlists = self.deezer.fetch_library_playlists_metadata()
-            return any(str(p['id']) == str(deezer_id) for p in playlists)
-        except Exception:
+            if os.environ.get('DEBUG'):
+                print(f"\n[DEBUG] Checking if playlist {deezer_id} exists...")
+
+            # Try to fetch the playlist directly - works for both library and public playlists
+            playlist = self.deezer.fetch_playlist_by_id(deezer_id)
+
+            if os.environ.get('DEBUG'):
+                if playlist:
+                    print(f"[DEBUG] ✓ Playlist exists: {playlist.name}")
+                else:
+                    print(f"[DEBUG] ✗ Playlist not found (returned None)")
+
+            return playlist is not None
+        except Exception as e:
+            if os.environ.get('DEBUG'):
+                print(f"[DEBUG] ✗ Exception checking playlist existence: {e}")
             return False
 
     def _fetch_deezer_playlist(self, deezer_id: str):
