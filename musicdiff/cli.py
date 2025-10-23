@@ -123,227 +123,281 @@ def setup():
     def clear_screen():
         console.clear()
 
-    # Welcome
+    def load_existing_env():
+        """Load existing credentials from .env file."""
+        env_file = get_config_dir() / '.env'
+        credentials = {
+            'spotify_client_id': None,
+            'spotify_client_secret': None,
+            'spotify_redirect_uri': None,
+            'deezer_arl': None
+        }
+
+        if env_file.exists():
+            with open(env_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('export SPOTIFY_CLIENT_ID='):
+                        credentials['spotify_client_id'] = line.split('=', 1)[1].strip('"')
+                    elif line.startswith('export SPOTIFY_CLIENT_SECRET='):
+                        credentials['spotify_client_secret'] = line.split('=', 1)[1].strip('"')
+                    elif line.startswith('export SPOTIFY_REDIRECT_URI='):
+                        credentials['spotify_redirect_uri'] = line.split('=', 1)[1].strip('"')
+                    elif line.startswith('export DEEZER_ARL='):
+                        credentials['deezer_arl'] = line.split('=', 1)[1].strip('"')
+
+        return credentials
+
+    # Check existing configuration
+    existing = load_existing_env()
+    has_spotify = bool(existing['spotify_client_id'] and existing['spotify_client_secret'])
+    has_deezer = bool(existing['deezer_arl'])
+
+    # Show current status
     clear_screen()
     console.print()
     console.print(Panel.fit(
-        "[bold cyan]🎵 MusicDiff Setup Wizard[/bold cyan]\n\n"
-        "This wizard will help you set up MusicDiff to sync your\n"
-        "music libraries between Spotify and Deezer.\n\n"
-        "[dim]Press Enter to continue...[/dim]",
+        "[bold cyan]🎵 MusicDiff Setup[/bold cyan]\n\n"
+        "Configure your API credentials",
         border_style="cyan"
     ))
     console.print()
-    input()
-
-    # Choose platforms
-    clear_screen()
-    console.print()
-    console.print("[bold]Which music platforms do you use?[/bold]")
-    console.print()
-    console.print("1. [green]Spotify only[/green] (easiest, free)")
-    console.print("2. [cyan]Spotify + Deezer[/cyan] (free with Deezer account)")
+    console.print("[bold]Current Configuration:[/bold]")
     console.print()
 
-    choice = Prompt.ask("Choose option", choices=["1", "2"], default="1")
-    setup_deezer = choice == "2"
-
-    # Spotify Setup - Step 1
-    clear_screen()
-    console.print()
-    console.print(Panel.fit(
-        "[bold green]📗 Spotify Setup - Step 1 of 3[/bold green]\n\n"
-        "We need to create a Spotify app to get API credentials.\n"
-        "Don't worry - this is free and takes 2 minutes!",
-        border_style="green"
-    ))
-    console.print()
-    console.print("[bold]Step 1:[/bold] Open Spotify Developer Dashboard")
-    console.print()
-
-    if Confirm.ask("Open browser automatically?", default=True):
-        console.print("Opening https://developer.spotify.com/dashboard in your browser...")
-        webbrowser.open("https://developer.spotify.com/dashboard")
-        time.sleep(2)
+    if has_spotify:
+        console.print("  [green]✓[/green] Spotify configured")
+        console.print(f"    Client ID: {existing['spotify_client_id'][:20]}...")
     else:
-        console.print("Please open: [cyan]https://developer.spotify.com/dashboard[/cyan]")
+        console.print("  [red]✗[/red] Spotify not configured")
 
     console.print()
-    console.print("[dim]Press Enter when you're ready to continue...[/dim]")
-    input()
 
-    # Spotify Setup - Step 2
-    clear_screen()
-    console.print()
-    console.print(Panel.fit(
-        "[bold green]📗 Spotify Setup - Step 2 of 3[/bold green]\n\n"
-        "Create a new Spotify app:",
-        border_style="green"
-    ))
-    console.print()
-    console.print("1. Click the [cyan bold]'Create app'[/cyan bold] button")
-    console.print("2. Fill in the form:")
-    console.print("   • [bold]App name:[/bold] MusicDiff")
-    console.print("   • [bold]App description:[/bold] Personal music library sync")
-    console.print("   • [bold]Redirect URI:[/bold] https://localhost:8888/callback")
-    console.print("   • Check the Terms of Service box")
-    console.print("3. Click [cyan bold]'Save'[/cyan bold]")
-    console.print()
-    console.print("[dim]Press Enter when you've created the app...[/dim]")
-    input()
-
-    # Spotify Setup - Step 3
-    clear_screen()
-    console.print()
-    console.print(Panel.fit(
-        "[bold green]📗 Spotify Setup - Step 3 of 3[/bold green]\n\n"
-        "Now let's get your credentials:",
-        border_style="green"
-    ))
-    console.print()
-    console.print("1. Click on your new [cyan bold]MusicDiff[/cyan bold] app")
-    console.print("2. Click [cyan bold]'Settings'[/cyan bold] button")
-    console.print("3. You'll see:")
-    console.print("   • [bold]Client ID[/bold] - copy this")
-    console.print("   • [bold]Client Secret[/bold] - click 'View client secret' and copy")
-    console.print()
-
-    spotify_client_id = Prompt.ask("[bold]Enter your Spotify Client ID[/bold]")
-    spotify_client_secret = Prompt.ask("[bold]Enter your Spotify Client Secret[/bold]", password=True)
+    if has_deezer:
+        console.print("  [green]✓[/green] Deezer configured")
+        console.print(f"    ARL: {existing['deezer_arl'][:20]}...")
+    else:
+        console.print("  [yellow]○[/yellow] Deezer not configured")
 
     console.print()
-    use_https = Confirm.ask(
-        "Did you use [cyan]https://[/cyan]localhost:8888/callback (instead of http)?",
-        default=True
-    )
-    spotify_redirect_uri = "https://localhost:8888/callback" if use_https else "http://localhost:8888/callback"
 
-    # Test Spotify credentials
-    console.print()
-    console.print("[bold]Testing Spotify credentials...[/bold]")
+    # If everything is configured, ask if user wants to reconfigure
+    if has_spotify and has_deezer:
+        console.print("[green]All services are configured![/green]")
+        console.print()
+        if not Confirm.ask("Do you want to reconfigure?", default=False):
+            console.print("[cyan]Setup skipped - using existing configuration[/cyan]")
+            return
 
-    try:
-        os.environ['SPOTIFY_CLIENT_ID'] = spotify_client_id
-        os.environ['SPOTIFY_CLIENT_SECRET'] = spotify_client_secret
-        os.environ['SPOTIFY_REDIRECT_URI'] = spotify_redirect_uri
+    # Determine what needs to be set up
+    setup_spotify = not has_spotify
+    setup_deezer = not has_deezer
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]Authenticating with Spotify..."),
-            console=console
-        ) as progress:
-            progress.add_task("auth", total=None)
-            client = SpotifyClient(spotify_client_id, spotify_client_secret, spotify_redirect_uri)
-            success = client.authenticate()
+    if has_spotify and not has_deezer:
+        console.print("[bold]Spotify is configured. Set up Deezer now?[/bold]")
+        console.print()
+        setup_deezer = Confirm.ask("Configure Deezer", default=True)
+        if not setup_deezer:
+            console.print("[cyan]Setup skipped - using existing configuration[/cyan]")
+            return
 
-        if success:
-            user = client.sp.current_user()
-            console.print(f"[green]✓ Successfully authenticated as {user['display_name']}![/green]")
+    if has_deezer and not has_spotify:
+        setup_spotify = True
+
+    # Start setup flow
+    if has_spotify and Confirm.ask("Reconfigure Spotify credentials?", default=False):
+        setup_spotify = True
+
+    if has_deezer and setup_deezer and Confirm.ask("Reconfigure Deezer credentials?", default=False):
+        setup_deezer = True
+    elif not has_deezer and has_spotify:
+        # Only ask if Spotify is configured
+        pass  # Already determined above
+
+    # Initialize with existing or new values
+    spotify_client_id = existing['spotify_client_id']
+    spotify_client_secret = existing['spotify_client_secret']
+    spotify_redirect_uri = existing['spotify_redirect_uri'] or "http://127.0.0.1:8888/callback"
+
+    # Spotify Setup
+    if setup_spotify:
+        # Spotify Setup - Step 1
+        clear_screen()
+        console.print()
+        console.print(Panel.fit(
+            "[bold green]📗 Spotify Setup - Step 1 of 3[/bold green]\n\n"
+            "We need to create a Spotify app to get API credentials.\n"
+            "Don't worry - this is free and takes 2 minutes!",
+            border_style="green"
+        ))
+        console.print()
+        console.print("[bold]Step 1:[/bold] Open Spotify Developer Dashboard")
+        console.print()
+
+        if Confirm.ask("Open browser automatically?", default=True):
+            console.print("Opening https://developer.spotify.com/dashboard in your browser...")
+            webbrowser.open("https://developer.spotify.com/dashboard")
+            time.sleep(2)
         else:
-            console.print("[red]✗ Authentication failed[/red]")
+            console.print("Please open: [cyan]https://developer.spotify.com/dashboard[/cyan]")
+
+        console.print()
+        console.print("[dim]Press Enter when you're ready to continue...[/dim]")
+        input()
+
+        # Spotify Setup - Step 2
+        clear_screen()
+        console.print()
+        console.print(Panel.fit(
+            "[bold green]📗 Spotify Setup - Step 2 of 3[/bold green]\n\n"
+            "Create a new Spotify app:",
+            border_style="green"
+        ))
+        console.print()
+        console.print("1. Click the [cyan bold]'Create app'[/cyan bold] button")
+        console.print("2. Fill in the form:")
+        console.print("   • [bold]App name:[/bold] MusicDiff")
+        console.print("   • [bold]App description:[/bold] Personal music library sync")
+        console.print("   • [bold]Redirect URI:[/bold] http://127.0.0.1:8888/callback")
+        console.print("   • Check the Terms of Service box")
+        console.print("3. Click [cyan bold]'Save'[/cyan bold]")
+        console.print()
+        console.print("[dim]Press Enter when you've created the app...[/dim]")
+        input()
+
+        # Spotify Setup - Step 3
+        clear_screen()
+        console.print()
+        console.print(Panel.fit(
+            "[bold green]📗 Spotify Setup - Step 3 of 3[/bold green]\n\n"
+            "Now let's get your credentials:",
+            border_style="green"
+        ))
+        console.print()
+        console.print("1. Click on your new [cyan bold]MusicDiff[/cyan bold] app")
+        console.print("2. Click [cyan bold]'Settings'[/cyan bold] button")
+        console.print("3. You'll see:")
+        console.print("   • [bold]Client ID[/bold] - copy this")
+        console.print("   • [bold]Client Secret[/bold] - click 'View client secret' and copy")
+        console.print()
+
+        spotify_client_id = Prompt.ask("[bold]Enter your Spotify Client ID[/bold]")
+        spotify_client_secret = Prompt.ask("[bold]Enter your Spotify Client Secret[/bold]", password=True)
+        spotify_redirect_uri = "http://127.0.0.1:8888/callback"
+
+        # Test Spotify credentials
+        console.print()
+        console.print("[bold]Testing Spotify credentials...[/bold]")
+
+        try:
+            os.environ['SPOTIFY_CLIENT_ID'] = spotify_client_id
+            os.environ['SPOTIFY_CLIENT_SECRET'] = spotify_client_secret
+            os.environ['SPOTIFY_REDIRECT_URI'] = spotify_redirect_uri
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]Authenticating with Spotify..."),
+                console=console
+            ) as progress:
+                progress.add_task("auth", total=None)
+                client = SpotifyClient(spotify_client_id, spotify_client_secret, spotify_redirect_uri)
+                success = client.authenticate()
+
+            if success:
+                user = client.sp.current_user()
+                console.print(f"[green]✓ Successfully authenticated as {user['display_name']}![/green]")
+            else:
+                console.print("[red]✗ Authentication failed[/red]")
+                if not Confirm.ask("Continue anyway?", default=False):
+                    console.print("[yellow]Setup cancelled.[/yellow]")
+                    return
+        except Exception as e:
+            console.print(f"[red]✗ Error: {e}[/red]")
             if not Confirm.ask("Continue anyway?", default=False):
                 console.print("[yellow]Setup cancelled.[/yellow]")
                 return
-    except Exception as e:
-        console.print(f"[red]✗ Error: {e}[/red]")
-        if not Confirm.ask("Continue anyway?", default=False):
-            console.print("[yellow]Setup cancelled.[/yellow]")
-            return
+
+    # Initialize Deezer with existing value
+    deezer_arl = existing['deezer_arl']
 
     # Deezer Setup
-    deezer_arl = None
-
     if setup_deezer:
         clear_screen()
         console.print()
         console.print(Panel.fit(
             "[bold magenta]🎵 Deezer Setup[/bold magenta]\n\n"
-            "[yellow]Requirements:[/yellow]\n"
-            "• Free Deezer account\n"
-            "• 2-3 minutes for setup\n\n"
-            "You'll need to extract your ARL token from Deezer.",
+            "Extract your ARL token from Deezer",
             border_style="magenta"
         ))
         console.print()
 
-        if Confirm.ask("Do you have a Deezer account?", default=True):
-            # Step 1: Get ARL Token
-            clear_screen()
-            console.print()
-            console.print(Panel.fit(
-                "[bold magenta]🎵 Deezer - Get Your ARL Token[/bold magenta]\n\n"
-                "The ARL token is your authentication credential",
-                border_style="magenta"
-            ))
-            console.print()
+        console.print("[bold]Method 1: Using Browser DevTools (Recommended)[/bold]")
+        console.print()
+        console.print("1. Open https://www.deezer.com in your browser")
+        console.print("2. Log in to your Deezer account")
+        console.print("3. Open DevTools (F12 or Cmd+Option+I)")
+        console.print("4. Go to the [cyan]Application[/cyan] (Chrome) or [cyan]Storage[/cyan] (Firefox) tab")
+        console.print("5. Click [cyan]Cookies[/cyan] → [cyan]https://www.deezer.com[/cyan]")
+        console.print("6. Find the cookie named [cyan bold]'arl'[/cyan bold]")
+        console.print("7. Copy its value (long string of letters and numbers)")
+        console.print()
 
-            console.print("[bold]Method 1: Using Browser DevTools (Recommended)[/bold]")
-            console.print()
-            console.print("1. Open https://www.deezer.com in your browser")
-            console.print("2. Log in to your Deezer account")
-            console.print("3. Open DevTools (F12 or Cmd+Option+I)")
-            console.print("4. Go to the [cyan]Application[/cyan] (Chrome) or [cyan]Storage[/cyan] (Firefox) tab")
-            console.print("5. Click [cyan]Cookies[/cyan] → [cyan]https://www.deezer.com[/cyan]")
-            console.print("6. Find the cookie named [cyan bold]'arl'[/cyan bold]")
-            console.print("7. Copy its value (long string of letters and numbers)")
-            console.print()
+        if Confirm.ask("Open Deezer in browser?", default=True):
+            console.print("Opening https://www.deezer.com in your browser...")
+            webbrowser.open("https://www.deezer.com")
+            time.sleep(2)
 
-            if Confirm.ask("Open Deezer in browser?", default=True):
-                console.print("Opening https://www.deezer.com in your browser...")
-                webbrowser.open("https://www.deezer.com")
-                time.sleep(2)
+        console.print()
+        console.print("[bold]Method 2: Using Browser Extension[/bold]")
+        console.print()
+        console.print("• Install 'EditThisCookie' (Chrome) or 'Cookie-Editor' (Firefox)")
+        console.print("• Go to https://www.deezer.com and log in")
+        console.print("• Click the extension icon and find the 'arl' cookie")
+        console.print()
 
-            console.print()
-            console.print("[bold]Method 2: Using Browser Extension[/bold]")
-            console.print()
-            console.print("• Install 'EditThisCookie' (Chrome) or 'Cookie-Editor' (Firefox)")
-            console.print("• Go to https://www.deezer.com and log in")
-            console.print("• Click the extension icon and find the 'arl' cookie")
-            console.print()
+        console.print("[dim]Press Enter when you're ready to enter your ARL token...[/dim]")
+        input()
 
-            console.print("[dim]Press Enter when you're ready to enter your ARL token...[/dim]")
-            input()
+        # Get ARL token
+        clear_screen()
+        console.print()
+        console.print(Panel.fit(
+            "[bold magenta]🎵 Deezer - Enter ARL Token[/bold magenta]",
+            border_style="magenta"
+        ))
+        console.print()
 
-            # Get ARL token
-            clear_screen()
-            console.print()
-            console.print(Panel.fit(
-                "[bold magenta]🎵 Deezer - Enter ARL Token[/bold magenta]",
-                border_style="magenta"
-            ))
-            console.print()
+        deezer_arl = Prompt.ask("[bold]Enter your Deezer ARL token[/bold]", password=True)
 
-            deezer_arl = Prompt.ask("[bold]Enter your Deezer ARL token[/bold]", password=True)
+        # Test Deezer credentials
+        console.print()
+        console.print("[bold]Testing Deezer credentials...[/bold]")
 
-            # Test Deezer credentials
-            console.print()
-            console.print("[bold]Testing Deezer credentials...[/bold]")
+        try:
+            os.environ['DEEZER_ARL'] = deezer_arl
 
-            try:
-                os.environ['DEEZER_ARL'] = deezer_arl
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]Authenticating with Deezer..."),
+                console=console
+            ) as progress:
+                progress.add_task("auth", total=None)
+                client = DeezerClient(arl_token=deezer_arl)
+                success = client.authenticate()
 
-                with Progress(
-                    SpinnerColumn(),
-                    TextColumn("[bold blue]Authenticating with Deezer..."),
-                    console=console
-                ) as progress:
-                    progress.add_task("auth", total=None)
-                    client = DeezerClient(arl_token=deezer_arl)
-                    success = client.authenticate()
-
-                if success:
-                    console.print(f"[green]✓ Successfully authenticated with Deezer (User ID: {client.user_id})![/green]")
-                else:
-                    console.print("[red]✗ Authentication failed[/red]")
-                    console.print("[yellow]Your ARL token may be invalid or expired.[/yellow]")
-                    if not Confirm.ask("Continue anyway?", default=False):
-                        console.print("[yellow]Setup cancelled.[/yellow]")
-                        return
-            except Exception as e:
-                console.print(f"[red]✗ Error: {e}[/red]")
+            if success:
+                console.print(f"[green]✓ Successfully authenticated with Deezer (User ID: {client.user_id})![/green]")
+            else:
+                console.print("[red]✗ Authentication failed[/red]")
+                console.print("[yellow]Your ARL token may be invalid or expired.[/yellow]")
                 if not Confirm.ask("Continue anyway?", default=False):
                     console.print("[yellow]Setup cancelled.[/yellow]")
                     return
+        except Exception as e:
+            console.print(f"[red]✗ Error: {e}[/red]")
+            if not Confirm.ask("Continue anyway?", default=False):
+                console.print("[yellow]Setup cancelled.[/yellow]")
+                return
 
     # Save credentials
     env_file = get_config_dir() / '.env'
@@ -372,16 +426,27 @@ def setup():
     # Completion screen
     clear_screen()
     console.print()
-    console.print(Panel.fit(
-        "[bold green]🎉 Setup Complete![/bold green]\n\n"
-        "MusicDiff is ready to sync your music!",
-        border_style="green"
-    ))
+
+    if setup_spotify or setup_deezer:
+        console.print(Panel.fit(
+            "[bold green]🎉 Setup Complete![/bold green]\n\n"
+            "MusicDiff is ready to sync your music!",
+            border_style="green"
+        ))
+    else:
+        console.print(Panel.fit(
+            "[bold cyan]✓ Configuration Updated[/bold cyan]\n\n"
+            "Your credentials have been saved",
+            border_style="cyan"
+        ))
+
     console.print()
-    console.print("[bold]What's been set up:[/bold]")
+    console.print("[bold]Current configuration:[/bold]")
     console.print("  [green]✓[/green] Spotify API credentials")
     if deezer_arl:
         console.print("  [green]✓[/green] Deezer API credentials")
+    else:
+        console.print("  [yellow]○[/yellow] Deezer not configured (run setup again to add)")
     console.print(f"  [green]✓[/green] Configuration saved to {env_file}")
     console.print()
     console.print("[bold]Next steps:[/bold]")
@@ -392,7 +457,10 @@ def setup():
     console.print("2. Initialize MusicDiff:")
     console.print("   [cyan]musicdiff init[/cyan]")
     console.print()
-    console.print("3. Start syncing!")
+    console.print("3. Select playlists to sync:")
+    console.print("   [cyan]musicdiff select[/cyan]")
+    console.print()
+    console.print("4. Start syncing!")
     console.print("   [cyan]musicdiff sync[/cyan]")
     console.print()
 
