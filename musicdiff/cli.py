@@ -659,49 +659,22 @@ def select():
     Opens an interactive checkbox interface to choose playlists.
     Selected playlists will be synced when you run 'musicdiff sync'.
     """
-    from rich.live import Live
-    from rich.spinner import Spinner
-    from rich.text import Text
-
     db = get_database()
     spotify = get_spotify_client()
     ui = UI()
 
-    # Fetch all Spotify playlists with fun progress
+    # Fetch all Spotify playlists
     sp_playlists = None
 
-    fun_messages = [
-        "🎵 Connecting to Spotify...",
-        "🎧 Loading your playlists...",
-        "📻 Fetching playlist data...",
-        "🎶 Almost there...",
-        "✨ Polishing the data..."
-    ]
-
     console.print()
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[bold cyan]{task.description}"),
-        console=console
-    ) as progress:
-        task = progress.add_task(fun_messages[0], total=None)
+    console.print("🎵 Fetching your Spotify playlists...")
 
-        import time
-        for i, msg in enumerate(fun_messages[:3]):
-            progress.update(task, description=msg)
-            time.sleep(0.3)
-
-        try:
-            sp_playlists = spotify.fetch_playlists()
-            progress.update(task, description="[green]✓ Playlists loaded!")
-            time.sleep(0.3)
-        except Exception as e:
-            progress.update(task, description="[red]✗ Failed to fetch playlists")
-            console.print()
-            console.print(f"[red]Error: {e}[/red]")
-            sys.exit(1)
-
-    console.print()
+    try:
+        sp_playlists = spotify.fetch_playlists()
+        console.print("[green]✓ Playlists loaded![/green]\n")
+    except Exception as e:
+        console.print(f"[red]✗ Failed to fetch playlists: {e}[/red]")
+        sys.exit(1)
 
     if not sp_playlists:
         console.print("[yellow]⚠ No Spotify playlists found[/yellow]")
