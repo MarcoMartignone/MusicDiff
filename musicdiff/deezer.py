@@ -277,21 +277,26 @@ class DeezerClient:
         if not self.user_id:
             raise RuntimeError("Not authenticated. Call authenticate() first.")
 
-        url = f"{self.BASE_URL}/user/{self.user_id}/playlists"
+        # Use private API for playlist creation (works with ARL authentication)
+        url = f"{self.PRIVATE_API_URL}"
         params = {
+            'method': 'playlist.create',
+            'api_version': '1.0',
+            'api_token': 'null',
             'title': name,
-            'access_token': self._get_access_token()
+            'description': description if description else '',
+            'status': 1 if public else 0,  # 0 = private, 1 = public
+            'type': 0  # 0 = playlist
         }
-
-        if description:
-            params['description'] = description
-        if public:
-            params['public'] = 'true'
 
         response = self._api_call_with_retry('POST', url, params=params)
         data = response.json()
 
-        return str(data.get('id'))
+        if 'error' in data:
+            raise RuntimeError(f"Failed to create playlist: {data.get('error', {}).get('message', 'Unknown error')}")
+
+        # Private API returns playlist ID in results
+        return str(data.get('results'))
 
     def add_tracks_to_playlist(self, playlist_id: str, track_ids: List[str]) -> bool:
         """Add tracks to a playlist.
@@ -306,17 +311,24 @@ class DeezerClient:
         if not self.user_id:
             raise RuntimeError("Not authenticated. Call authenticate() first.")
 
-        # Deezer API accepts comma-separated track IDs
-        tracks_str = ','.join(track_ids)
-
-        url = f"{self.BASE_URL}/playlist/{playlist_id}/tracks"
+        # Use private API for adding tracks (works with ARL authentication)
+        url = f"{self.PRIVATE_API_URL}"
         params = {
-            'songs': tracks_str,
-            'access_token': self._get_access_token()
+            'method': 'playlist.addSongs',
+            'api_version': '1.0',
+            'api_token': 'null',
+            'playlist_id': playlist_id,
+            'songs': track_ids,  # Private API accepts array of track IDs
+            'offset': -1  # Add to end of playlist
         }
 
         response = self._api_call_with_retry('POST', url, params=params)
-        return response.status_code == 200
+        data = response.json()
+
+        if 'error' in data:
+            return False
+
+        return True
 
     def remove_tracks_from_playlist(self, playlist_id: str, track_ids: List[str]) -> bool:
         """Remove tracks from a playlist.
@@ -331,16 +343,23 @@ class DeezerClient:
         if not self.user_id:
             raise RuntimeError("Not authenticated. Call authenticate() first.")
 
-        tracks_str = ','.join(track_ids)
-
-        url = f"{self.BASE_URL}/playlist/{playlist_id}/tracks"
+        # Use private API for removing tracks (works with ARL authentication)
+        url = f"{self.PRIVATE_API_URL}"
         params = {
-            'songs': tracks_str,
-            'access_token': self._get_access_token()
+            'method': 'playlist.deleteSongs',
+            'api_version': '1.0',
+            'api_token': 'null',
+            'playlist_id': playlist_id,
+            'songs': track_ids  # Private API accepts array of track IDs
         }
 
-        response = self._api_call_with_retry('DELETE', url, params=params)
-        return response.status_code == 200
+        response = self._api_call_with_retry('POST', url, params=params)
+        data = response.json()
+
+        if 'error' in data:
+            return False
+
+        return True
 
     def delete_playlist(self, playlist_id: str) -> bool:
         """Delete a playlist from user's library.
@@ -354,11 +373,22 @@ class DeezerClient:
         if not self.user_id:
             raise RuntimeError("Not authenticated. Call authenticate() first.")
 
-        url = f"{self.BASE_URL}/playlist/{playlist_id}"
-        params = {'access_token': self._get_access_token()}
+        # Use private API for deleting playlist (works with ARL authentication)
+        url = f"{self.PRIVATE_API_URL}"
+        params = {
+            'method': 'playlist.delete',
+            'api_version': '1.0',
+            'api_token': 'null',
+            'playlist_id': playlist_id
+        }
 
-        response = self._api_call_with_retry('DELETE', url, params=params)
-        return response.status_code == 200
+        response = self._api_call_with_retry('POST', url, params=params)
+        data = response.json()
+
+        if 'error' in data:
+            return False
+
+        return True
 
     def add_to_library(self, track_ids: List[str]) -> bool:
         """Add tracks to user's favorites/library.
