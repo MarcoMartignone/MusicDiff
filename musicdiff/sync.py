@@ -227,9 +227,9 @@ class SyncEngine:
             # Build list of playlist IDs that actually need syncing
             # (only those in to_create or to_update, not all selected)
             playlists_to_sync_names = set()
-            for name, _, _ in to_create:
+            for name, _ in to_create:  # to_create has 2 elements: (name, track_count)
                 playlists_to_sync_names.add(name)
-            for name, _, _ in to_update:
+            for name, _, _ in to_update:  # to_update has 3 elements: (name, track_count, deezer_id)
                 playlists_to_sync_names.add(name)
 
             # Filter spotify_playlist_ids to only those that need syncing
