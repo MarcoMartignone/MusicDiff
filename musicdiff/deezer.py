@@ -368,110 +368,62 @@ class DeezerClient:
         if not self.user_id:
             raise RuntimeError("Not authenticated. Call authenticate() first.")
 
-        import json
-
-        # Get initial track count to verify addition later
-        initial_playlist = self.fetch_playlist_by_id(playlist_id)
-        initial_count = len(initial_playlist.tracks) if initial_playlist else 0
-
-        if self.debug:
-            print(f"\n[DEBUG] Initial playlist track count: {initial_count}")
-
         # Use private API for adding tracks (works with ARL authentication)
         api_token = self.api_token or 'null'
         url = f"{self.PRIVATE_API_URL}?method=playlist.addSongs&api_version=1.0&api_token={api_token}"
 
-        # Try multiple formats - the private API format is undocumented
-        formats = [
-            {
-                'name': 'JSON array of arrays [[track_id, 0], ...]',
-                'songs': json.dumps([[int(tid), 0] for tid in track_ids])
-            },
-            {
-                'name': 'Simple JSON array [track_id, ...]',
-                'songs': json.dumps([int(tid) for tid in track_ids])
-            },
-            {
-                'name': 'Comma-separated string',
-                'songs': ','.join(str(tid) for tid in track_ids)
-            },
-        ]
+        # Private API requires JSON body with songs as array of arrays: [[track_id, 0], ...]
+        # The second element (0) appears to be a position/index parameter
+        payload = {
+            'playlist_id': playlist_id,
+            'songs': [[int(tid), 0] for tid in track_ids],
+            'offset': -1
+        }
 
-        for fmt in formats:
-            if self.debug:
-                print(f"\n[DEBUG] Trying format: {fmt['name']}")
-                print(f"  URL: {url}")
-                print(f"  Playlist ID: {playlist_id}")
-                print(f"  Track IDs: {track_ids}")
-                print(f"  Songs value: {fmt['songs']}")
-
-            data = {
-                'playlist_id': playlist_id,
-                'songs': fmt['songs'],
-                'offset': -1
-            }
-
-            try:
-                response = self._api_call_with_retry('POST', url, data=data)
-
-                if self.debug:
-                    print(f"  Response Status: {response.status_code}")
-                    if response.text:
-                        print(f"  Response Body: {response.text[:200]}")
-
-                # Check response for errors
-                if response.text and response.text.strip():
-                    try:
-                        response_data = response.json()
-                        error = response_data.get('error')
-
-                        # If there's an error, try next format
-                        if error and (isinstance(error, dict) or (isinstance(error, list) and len(error) > 0)):
-                            if self.debug:
-                                print(f"  ✗ Error with this format: {error}")
-                            continue
-                    except:
-                        pass
-
-                # Verify tracks were actually added by checking playlist
-                if self.debug:
-                    print(f"  Verifying tracks were added...")
-
-                # Wait a moment for API to update
-                import time
-                time.sleep(1)
-
-                updated_playlist = self.fetch_playlist_by_id(playlist_id)
-                new_count = len(updated_playlist.tracks) if updated_playlist else 0
-
-                if self.debug:
-                    print(f"  New track count: {new_count}")
-
-                # Success if track count increased
-                if new_count > initial_count:
-                    if self.debug:
-                        print(f"  ✓ SUCCESS! Tracks added with format: {fmt['name']}")
-                        print(f"  Added {new_count - initial_count} tracks")
-                    return True
-                else:
-                    if self.debug:
-                        print(f"  ✗ Track count unchanged - trying next format")
-
-            except Exception as e:
-                if self.debug:
-                    print(f"  Exception with this format: {e}")
-                continue
-
-        # All formats failed
         if self.debug:
-            print(f"\n[DEBUG] ✗ All formats failed to add tracks")
-            print(f"  This could mean:")
-            print(f"  1. ARL token lacks playlist edit permissions")
-            print(f"  2. Playlist is not editable")
-            print(f"  3. Track IDs are invalid")
-            print(f"  4. API format has changed")
+            print(f"\n[DEBUG] Add Tracks Request:")
+            print(f"  URL: {url}")
+            print(f"  Playlist ID: {playlist_id}")
+            print(f"  Track IDs: {track_ids}")
+            print(f"  Payload: {payload}")
 
-        return False
+        response = self._api_call_with_retry('POST', url, json=payload)
+
+        if self.debug:
+            print(f"\n[DEBUG] Add Tracks Response:")
+            print(f"  Status: {response.status_code}")
+            if response.text:
+                print(f"  Body: {response.text[:200]}")
+
+        # Parse response
+        try:
+            response_data = response.json()
+
+            if self.debug:
+                print(f"  Parsed: {response_data}")
+
+            # Check for errors - empty array or dict means success
+            error = response_data.get('error')
+            if error and (isinstance(error, dict) or (isinstance(error, list) and len(error) > 0)):
+                if self.debug:
+                    print(f"  Error: {error}")
+                return False
+
+            # Check for success result
+            if response_data.get('results') == True:
+                if self.debug:
+                    print(f"  ✓ Tracks added successfully")
+                return True
+
+            if self.debug:
+                print(f"  ✓ Tracks added (no explicit success flag)")
+            return True
+
+        except Exception as e:
+            if self.debug:
+                print(f"  Exception parsing response: {e}")
+            # If we got HTTP 200, assume success
+            return response.status_code == 200
 
     def remove_tracks_from_playlist(self, playlist_id: str, track_ids: List[str]) -> bool:
         """Remove tracks from a playlist.
@@ -490,21 +442,49 @@ class DeezerClient:
         api_token = self.api_token or 'null'
         url = f"{self.PRIVATE_API_URL}?method=playlist.deleteSongs&api_version=1.0&api_token={api_token}"
 
-        import json
-        data = {
+        # Private API requires JSON body with songs as array of arrays: [[track_id, 0], ...]
+        payload = {
             'playlist_id': playlist_id,
-            'songs': json.dumps([[int(tid), 0] for tid in track_ids])  # Format: [[track_id, 0]]
+            'songs': [[int(tid), 0] for tid in track_ids],
+            'offset': -1
         }
 
-        response = self._api_call_with_retry('POST', url, data=data)
-        response_data = response.json()
+        if self.debug:
+            print(f"\n[DEBUG] Remove Tracks Request:")
+            print(f"  URL: {url}")
+            print(f"  Playlist ID: {playlist_id}")
+            print(f"  Track IDs: {track_ids}")
 
-        # Check for errors - empty array or dict means success
-        error = response_data.get('error')
-        if error and (isinstance(error, dict) or (isinstance(error, list) and len(error) > 0)):
-            return False
+        response = self._api_call_with_retry('POST', url, json=payload)
 
-        return True
+        if self.debug:
+            print(f"\n[DEBUG] Remove Tracks Response:")
+            print(f"  Status: {response.status_code}")
+            if response.text:
+                print(f"  Body: {response.text[:200]}")
+
+        # Parse response
+        try:
+            response_data = response.json()
+
+            if self.debug:
+                print(f"  Parsed: {response_data}")
+
+            # Check for errors - empty array or dict means success
+            error = response_data.get('error')
+            if error and (isinstance(error, dict) or (isinstance(error, list) and len(error) > 0)):
+                if self.debug:
+                    print(f"  Error: {error}")
+                return False
+
+            if self.debug:
+                print(f"  ✓ Tracks removed successfully")
+            return True
+
+        except Exception as e:
+            if self.debug:
+                print(f"  Exception parsing response: {e}")
+            return response.status_code == 200
 
     def delete_playlist(self, playlist_id: str) -> bool:
         """Delete a playlist from user's library.
