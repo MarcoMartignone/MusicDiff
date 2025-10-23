@@ -98,8 +98,58 @@ class DeezerClient:
         except Exception as e:
             return False
 
+    def fetch_library_playlists_metadata(self, progress_callback=None) -> List[Dict]:
+        """Fetch playlist metadata only (no track data) - fast!
+
+        Returns list of dicts with: deezer_id, name, track_count
+        Use this for displaying playlists when you don't need track details.
+
+        Args:
+            progress_callback: Optional callback function(current, total, playlist_name)
+
+        Returns:
+            List of playlist metadata dicts
+        """
+        if not self.user_id:
+            raise RuntimeError("Not authenticated. Call authenticate() first.")
+
+        playlists = []
+        url = f"{self.BASE_URL}/user/{self.user_id}/playlists"
+        params = {'limit': 100}
+
+        # First, get total count
+        first_response = self._api_call_with_retry('GET', url, params={'limit': 1})
+        first_data = first_response.json()
+        total_playlists = first_data.get('total', 0)
+
+        current_playlist = 0
+        url = f"{self.BASE_URL}/user/{self.user_id}/playlists"
+
+        while url:
+            response = self._api_call_with_retry('GET', url, params=params)
+            data = response.json()
+
+            for item in data.get('data', []):
+                current_playlist += 1
+
+                if progress_callback:
+                    progress_callback(current_playlist, total_playlists, item.get('title', 'Unknown'))
+
+                # Just metadata - no track fetching!
+                playlists.append({
+                    'id': item['id'],
+                    'title': item.get('title', ''),
+                    'track_count': item.get('nb_tracks', 0)
+                })
+
+            # Handle pagination
+            url = data.get('next')
+            params = None  # Next URL includes params
+
+        return playlists
+
     def fetch_library_playlists(self) -> List[Playlist]:
-        """Fetch all playlists from user's library.
+        """Fetch all playlists from user's library with full track data.
 
         Returns:
             List of Playlist objects

@@ -760,26 +760,35 @@ def select():
     try:
         deezer = get_deezer_client()
 
+        # Progress callback for Deezer fetch
+        deezer_progress = None
+        deezer_task = None
+
+        def deezer_progress_callback(current, total, name):
+            if deezer_progress and deezer_task is not None:
+                deezer_progress.update(
+                    deezer_task,
+                    completed=current,
+                    total=total,
+                    description=f"🎧 Loading Deezer playlists: {name[:40]}..."
+                )
+
         with Progress(
             SpinnerColumn(),
             TextColumn("[bold magenta]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
             console=console
         ) as progress:
-            task = progress.add_task("🎧 Checking what's already on Deezer...", total=None)
+            deezer_progress = progress
+            deezer_task = progress.add_task("🎧 Fetching Deezer playlists...", total=None)
 
-            # Fetch Deezer playlists
-            deezer_playlists_objs = deezer.fetch_library_playlists()
-            # Convert to dicts for easier handling
-            deezer_playlists = [
-                {
-                    'id': pl.deezer_id,
-                    'title': pl.name,
-                    'track_count': pl.track_count
-                }
-                for pl in deezer_playlists_objs
-            ]
+            # Fast fetch - just metadata, no tracks!
+            deezer_playlists = deezer.fetch_library_playlists_metadata(
+                progress_callback=deezer_progress_callback
+            )
 
-            progress.update(task, description="[green]✓ Deezer playlists loaded![/green]")
+            progress.update(deezer_task, description="[green]✓ Deezer playlists loaded![/green]")
             import time
             time.sleep(0.2)
 
