@@ -39,32 +39,13 @@ class UI:
             self.print_warning("No Spotify playlists found.")
             return {}
 
-        # Check if user already has selections
+        # Check if user already has selections and show them
         selected_count = sum(1 for selected in current_selections.values() if selected)
 
         if selected_count > 0:
-            # Show current selections first
+            # Show current selections info
             self.console.print()
-            self.console.print(f"[bold green]✓ You currently have {selected_count} playlists selected:[/bold green]\n")
-
-            selected_playlists = [p for p in playlists if current_selections.get(p.get('spotify_id') or p.get('id'), False)]
-            for playlist in selected_playlists:
-                self.console.print(f"  [green]●[/green] {playlist['name']} [dim]({playlist.get('track_count', 0)} tracks)[/dim]")
-
-            self.console.print()
-
-            # Ask what they want to do
-            action = Prompt.ask(
-                "What would you like to do?",
-                choices=["keep", "modify", "start-fresh"],
-                default="keep"
-            )
-
-            if action == "keep":
-                self.console.print("[green]✓ Keeping current selection[/green]")
-                return current_selections
-            elif action == "start-fresh":
-                current_selections = {}
+            self.console.print(f"[dim]Currently selected: {selected_count} playlist{'s' if selected_count != 1 else ''}[/dim]")
 
         # Display header
         self.console.print()
@@ -115,6 +96,7 @@ class UI:
         try:
             checkbox_kwargs = {
                 "choices": choices,
+                "default": default_selected,  # Pre-select currently selected playlists
                 "style": custom_style,
                 "instruction": "(Use arrow keys to move, SPACE to select, ENTER to confirm)"
             }
