@@ -224,8 +224,22 @@ class SyncEngine:
                     duration_seconds=duration
                 )
 
-            # Fetch selected playlists from Spotify
-            spotify_playlists = self._fetch_spotify_playlists(spotify_playlist_ids)
+            # Build list of playlist IDs that actually need syncing
+            # (only those in to_create or to_update, not all selected)
+            playlists_to_sync_names = set()
+            for name, _, _ in to_create:
+                playlists_to_sync_names.add(name)
+            for name, _, _ in to_update:
+                playlists_to_sync_names.add(name)
+
+            # Filter spotify_playlist_ids to only those that need syncing
+            playlist_ids_to_fetch = []
+            for playlist_info in selected:
+                if playlist_info['name'] in playlists_to_sync_names:
+                    playlist_ids_to_fetch.append(playlist_info['spotify_id'])
+
+            # Fetch only the playlists that need syncing from Spotify
+            spotify_playlists = self._fetch_spotify_playlists(playlist_ids_to_fetch)
 
             if mode == SyncMode.DRY_RUN:
                 # Show what would be synced
