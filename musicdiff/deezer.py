@@ -62,6 +62,7 @@ class DeezerClient:
         self.arl_token = arl_token
         self.session = requests.Session()
         self.user_id = None
+        self.api_token = None  # CSRF token for API requests
         self.debug = debug
 
         if arl_token:
@@ -87,17 +88,44 @@ class DeezerClient:
 
             response = self._api_call_with_retry('GET', url, params=params)
 
+            if self.debug:
+                print(f"\n[DEBUG] Authentication Request:")
+                print(f"  URL: {url}")
+                print(f"  Params: {params}")
+
             if response.status_code == 200:
                 data = response.json()
+
+                if self.debug:
+                    print(f"\n[DEBUG] Authentication Response:")
+                    print(f"  Status: {response.status_code}")
+                    print(f"  Data keys: {list(data.keys())}")
+                    if 'results' in data:
+                        print(f"  Results keys: {list(data['results'].keys())}")
+
                 if 'results' in data and 'USER' in data['results']:
                     self.user_id = str(data['results']['USER']['USER_ID'])
+
+                    # Extract CSRF token (checkForm) for API requests
+                    if 'checkForm' in data['results']:
+                        self.api_token = data['results']['checkForm']
+                        if self.debug:
+                            print(f"  CSRF Token: {self.api_token[:20]}...")
+                    else:
+                        if self.debug:
+                            print(f"  Warning: No checkForm token in response")
+
                     return True
                 elif 'error' in data:
                     # ARL might be invalid
+                    if self.debug:
+                        print(f"  Error: {data['error']}")
                     return False
 
             return False
         except Exception as e:
+            if self.debug:
+                print(f"  Exception: {e}")
             return False
 
     def fetch_library_playlists_metadata(self, progress_callback=None) -> List[Dict]:
@@ -280,7 +308,8 @@ class DeezerClient:
             raise RuntimeError("Not authenticated. Call authenticate() first.")
 
         # Use private API for playlist creation (works with ARL authentication)
-        url = f"{self.PRIVATE_API_URL}?method=playlist.create&api_version=1.0&api_token=null"
+        api_token = self.api_token or 'null'
+        url = f"{self.PRIVATE_API_URL}?method=playlist.create&api_version=1.0&api_token={api_token}"
 
         # Send data as form data in POST body
         data = {
@@ -335,7 +364,8 @@ class DeezerClient:
             raise RuntimeError("Not authenticated. Call authenticate() first.")
 
         # Use private API for adding tracks (works with ARL authentication)
-        url = f"{self.PRIVATE_API_URL}?method=playlist.addSongs&api_version=1.0&api_token=null"
+        api_token = self.api_token or 'null'
+        url = f"{self.PRIVATE_API_URL}?method=playlist.addSongs&api_version=1.0&api_token={api_token}"
 
         # Convert list to JSON array format
         import json
@@ -385,19 +415,19 @@ class DeezerClient:
             raise RuntimeError("Not authenticated. Call authenticate() first.")
 
         # Use private API for removing tracks (works with ARL authentication)
-        url = f"{self.PRIVATE_API_URL}"
-        params = {
-            'method': 'playlist.deleteSongs',
-            'api_version': '1.0',
-            'api_token': 'null',
+        api_token = self.api_token or 'null'
+        url = f"{self.PRIVATE_API_URL}?method=playlist.deleteSongs&api_version=1.0&api_token={api_token}"
+
+        import json
+        data = {
             'playlist_id': playlist_id,
-            'songs': track_ids  # Private API accepts array of track IDs
+            'songs': json.dumps([[int(tid), 0] for tid in track_ids])  # Format: [[track_id, 0]]
         }
 
-        response = self._api_call_with_retry('POST', url, params=params)
-        data = response.json()
+        response = self._api_call_with_retry('POST', url, data=data)
+        response_data = response.json()
 
-        if 'error' in data:
+        if 'error' in response_data and response_data['error']:
             return False
 
         return True
@@ -415,18 +445,17 @@ class DeezerClient:
             raise RuntimeError("Not authenticated. Call authenticate() first.")
 
         # Use private API for deleting playlist (works with ARL authentication)
-        url = f"{self.PRIVATE_API_URL}"
-        params = {
-            'method': 'playlist.delete',
-            'api_version': '1.0',
-            'api_token': 'null',
+        api_token = self.api_token or 'null'
+        url = f"{self.PRIVATE_API_URL}?method=playlist.delete&api_version=1.0&api_token={api_token}"
+
+        data = {
             'playlist_id': playlist_id
         }
 
-        response = self._api_call_with_retry('POST', url, params=params)
-        data = response.json()
+        response = self._api_call_with_retry('POST', url, data=data)
+        response_data = response.json()
 
-        if 'error' in data:
+        if 'error' in response_data and response_data['error']:
             return False
 
         return True
