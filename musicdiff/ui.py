@@ -14,6 +14,8 @@ from rich.text import Text
 from rich.tree import Tree
 from typing import List, Dict, Tuple
 from datetime import datetime
+import questionary
+from questionary import Style
 
 
 class UI:
@@ -24,7 +26,7 @@ class UI:
         self.console = Console()
 
     def select_playlists(self, playlists: List[Dict], current_selections: Dict[str, bool]) -> Dict[str, bool]:
-        """Modern, Claude Code-style playlist selection interface.
+        """Interactive checkbox playlist selection using questionary.
 
         Args:
             playlists: List of playlist dicts with spotify_id, name, track_count
@@ -41,165 +43,71 @@ class UI:
         self.console.print()
         self.console.print(Panel.fit(
             "[bold cyan]🎵 Select Playlists to Sync[/bold cyan]\n\n"
-            "Choose which Spotify playlists you want to sync to Deezer",
+            "Use ↑↓ arrows to navigate, SPACE to select/deselect, ENTER to confirm",
             border_style="cyan"
         ))
         self.console.print()
 
-        # Start with current selections
-        new_selections = current_selections.copy()
-
-        # Group playlists for better display
-        selected_playlists = []
-        unselected_playlists = []
+        # Prepare choices for questionary
+        choices = []
+        default_selected = []
 
         for playlist in playlists:
             spotify_id = playlist.get('spotify_id') or playlist.get('id')
-            is_selected = current_selections.get(spotify_id, False)
-
-            if is_selected:
-                selected_playlists.append(playlist)
-            else:
-                unselected_playlists.append(playlist)
-
-        # Display current selections in a clean format
-        if selected_playlists:
-            self.console.print("[bold green]✓ Currently Selected:[/bold green]")
-            for playlist in selected_playlists[:10]:  # Show first 10
-                name = playlist['name']
-                track_count = playlist.get('track_count', 0)
-                self.console.print(f"  [green]●[/green] {name} [dim]({track_count} tracks)[/dim]")
-
-            if len(selected_playlists) > 10:
-                remaining = len(selected_playlists) - 10
-                self.console.print(f"  [dim]... and {remaining} more[/dim]")
-            self.console.print()
-
-        if unselected_playlists:
-            self.console.print(f"[bold dim]○ Not Selected: {len(unselected_playlists)} playlists[/bold dim]")
-            self.console.print()
-
-        # Show total
-        self.console.print(f"[bold]Total:[/bold] {len(selected_playlists)}/{len(playlists)} playlists selected")
-        self.console.print()
-
-        # Ask what to do
-        self.console.print("[bold]What would you like to do?[/bold]")
-        self.console.print()
-        self.console.print("  [cyan]1.[/cyan] Select all playlists")
-        self.console.print("  [cyan]2.[/cyan] Deselect all playlists")
-        self.console.print("  [cyan]3.[/cyan] Select specific playlists (enter numbers)")
-        self.console.print("  [cyan]4.[/cyan] Keep current selection and continue")
-        self.console.print()
-
-        choice = Prompt.ask("Choose an option", choices=["1", "2", "3", "4"], default="4")
-
-        if choice == "1":
-            # Select all
-            for playlist in playlists:
-                spotify_id = playlist.get('spotify_id') or playlist.get('id')
-                new_selections[spotify_id] = True
-            self.console.print("\n[green]✓ All playlists selected![/green]\n")
-
-        elif choice == "2":
-            # Deselect all
-            for playlist in playlists:
-                spotify_id = playlist.get('spotify_id') or playlist.get('id')
-                new_selections[spotify_id] = False
-            self.console.print("\n[yellow]○ All playlists deselected[/yellow]\n")
-
-        elif choice == "3":
-            # Custom selection
-            return self._interactive_selection(playlists, new_selections)
-
-        return new_selections
-
-    def _interactive_selection(self, playlists: List[Dict], current_selections: Dict[str, bool]) -> Dict[str, bool]:
-        """Interactive number-based playlist selection.
-
-        Args:
-            playlists: List of playlist dicts
-            current_selections: Current selections
-
-        Returns:
-            Updated selections dict
-        """
-        self.console.print()
-        self.console.print("[bold cyan]📋 All Playlists:[/bold cyan]\n")
-
-        # Show all playlists with numbers
-        new_selections = current_selections.copy()
-
-        for i, playlist in enumerate(playlists, 1):
-            spotify_id = playlist.get('spotify_id') or playlist.get('id')
             name = playlist['name']
             track_count = playlist.get('track_count', 0)
-            currently_selected = new_selections.get(spotify_id, False)
 
-            if currently_selected:
-                status = "[green]✓[/green]"
-                style = "green"
-            else:
-                status = "[dim]○[/dim]"
-                style = "dim"
+            # Create choice with name and track count
+            choice_text = f"{name} ({track_count} tracks)"
+            choice = questionary.Choice(title=choice_text, value=spotify_id)
+            choices.append(choice)
 
-            self.console.print(f"  [{style}]{i:3d}. {status} {name} ({track_count} tracks)[/{style}]")
+            # Mark as default if currently selected
+            if current_selections.get(spotify_id, False):
+                default_selected.append(spotify_id)
 
-        self.console.print()
-        self.console.print("[bold]How to select:[/bold]")
-        self.console.print("  • Enter numbers separated by commas: [cyan]1,5,10[/cyan]")
-        self.console.print("  • Enter a range: [cyan]1-20[/cyan]")
-        self.console.print("  • Combine both: [cyan]1-10,15,20-25[/cyan]")
-        self.console.print("  • Type [cyan]'done'[/cyan] when finished")
-        self.console.print()
+        # Custom styling for the checkbox
+        custom_style = Style([
+            ('qmark', 'fg:#00ff00 bold'),        # Question mark - green
+            ('question', 'bold'),                 # Question text
+            ('answer', 'fg:#00ff00 bold'),       # Answer - green
+            ('pointer', 'fg:#00ffff bold'),      # Pointer - cyan
+            ('highlighted', 'fg:#00ffff bold'),  # Highlighted choice - cyan
+            ('selected', 'fg:#00ff00'),          # Selected items - green
+            ('separator', 'fg:#555555'),         # Separator
+            ('instruction', 'fg:#888888'),       # Instructions
+            ('text', ''),                        # Default text
+            ('disabled', 'fg:#888888 italic')    # Disabled choices
+        ])
 
-        while True:
-            response = Prompt.ask("Select playlists", default="done")
+        # Show checkbox selection
+        try:
+            selected = questionary.checkbox(
+                "Select playlists to sync:",
+                choices=choices,
+                default=default_selected,
+                style=custom_style,
+                use_indicator=True,
+                use_shortcuts=False,
+                instruction="(Use arrow keys to move, SPACE to select, ENTER to confirm)"
+            ).ask()
 
-            if response.lower() == 'done':
-                break
+            if selected is None:
+                # User cancelled (Ctrl+C)
+                self.console.print("\n[yellow]Selection cancelled[/yellow]\n")
+                return current_selections
 
-            try:
-                # Parse input (supports ranges like 1-10 and individual numbers)
-                numbers = set()
-                parts = response.split(',')
+            # Build new selections dict
+            new_selections = {}
+            for playlist in playlists:
+                spotify_id = playlist.get('spotify_id') or playlist.get('id')
+                new_selections[spotify_id] = spotify_id in selected
 
-                for part in parts:
-                    part = part.strip()
-                    if '-' in part:
-                        # Range
-                        start, end = part.split('-')
-                        start, end = int(start.strip()), int(end.strip())
-                        numbers.update(range(start, end + 1))
-                    else:
-                        # Individual number
-                        numbers.add(int(part))
+            return new_selections
 
-                # Toggle selections
-                for num in numbers:
-                    if 1 <= num <= len(playlists):
-                        playlist = playlists[num - 1]
-                        spotify_id = playlist.get('spotify_id') or playlist.get('id')
-                        # Toggle selection
-                        new_selections[spotify_id] = not new_selections.get(spotify_id, False)
-                    else:
-                        self.print_warning(f"Invalid playlist number: {num}")
-
-                # Show updated state
-                selected = [p for p in playlists if new_selections.get(p.get('spotify_id') or p.get('id'), False)]
-                self.console.print(f"\n[bold]Selected: {len(selected)}/{len(playlists)} playlists[/bold]")
-
-                if selected:
-                    for playlist in selected[:5]:
-                        self.console.print(f"  [green]●[/green] {playlist['name']}")
-                    if len(selected) > 5:
-                        self.console.print(f"  [dim]... and {len(selected) - 5} more[/dim]")
-                self.console.print()
-
-            except ValueError:
-                self.print_error("Invalid input. Use format: 1,2,3 or 1-10 or combination")
-
-        return new_selections
+        except Exception as e:
+            self.print_error(f"Selection failed: {e}")
+            return current_selections
 
     def show_playlist_list(self, playlists: List[Dict], synced_playlists: Dict[str, Dict]):
         """Show list of all playlists with sync status.
