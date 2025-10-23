@@ -187,11 +187,20 @@ class DeezerClient:
         Returns:
             Playlist object or None if not found
         """
+        import os
         try:
             # Fetch playlist metadata
             url = f"{self.BASE_URL}/playlist/{playlist_id}"
             response = self._api_call_with_retry('GET', url)
             data = response.json()
+
+            if os.environ.get('DEBUG'):
+                print(f"\n[DEBUG] Fetch Playlist {playlist_id} Response:")
+                print(f"  Status: {response.status_code}")
+                if 'error' in data:
+                    print(f"  Error: {data.get('error')}")
+                if 'nb_tracks' in data:
+                    print(f"  Playlist metadata nb_tracks: {data.get('nb_tracks')}")
 
             if 'error' in data:
                 return None
@@ -201,11 +210,17 @@ class DeezerClient:
 
             # Fetch tracks
             tracks = self._fetch_playlist_tracks(playlist_id)
+
+            if os.environ.get('DEBUG'):
+                print(f"  Tracks fetched: {len(tracks)}")
+
             playlist.tracks = tracks
 
             return playlist
 
-        except Exception:
+        except Exception as e:
+            if os.environ.get('DEBUG'):
+                print(f"[DEBUG] Exception fetching playlist {playlist_id}: {e}")
             return None
 
     def fetch_library_playlists(self) -> List[Playlist]:
