@@ -52,15 +52,17 @@ class DeezerClient:
     BASE_URL = "https://api.deezer.com"
     PRIVATE_API_URL = "https://www.deezer.com/ajax/gw-light.php"
 
-    def __init__(self, arl_token: str = None):
+    def __init__(self, arl_token: str = None, debug: bool = False):
         """Initialize Deezer client.
 
         Args:
             arl_token: Deezer ARL authentication token
+            debug: Enable debug logging for API calls
         """
         self.arl_token = arl_token
         self.session = requests.Session()
         self.user_id = None
+        self.debug = debug
 
         if arl_token:
             self.session.cookies.set('arl', arl_token, domain='.deezer.com')
@@ -278,25 +280,46 @@ class DeezerClient:
             raise RuntimeError("Not authenticated. Call authenticate() first.")
 
         # Use private API for playlist creation (works with ARL authentication)
-        url = f"{self.PRIVATE_API_URL}"
-        params = {
-            'method': 'playlist.create',
-            'api_version': '1.0',
-            'api_token': 'null',
+        url = f"{self.PRIVATE_API_URL}?method=playlist.create&api_version=1.0&api_token=null"
+
+        # Send data as form data in POST body
+        data = {
             'title': name,
             'description': description if description else '',
             'status': 1 if public else 0,  # 0 = private, 1 = public
             'type': 0  # 0 = playlist
         }
 
-        response = self._api_call_with_retry('POST', url, params=params)
-        data = response.json()
+        if self.debug:
+            print(f"\n[DEBUG] Create Playlist Request:")
+            print(f"  URL: {url}")
+            print(f"  Data: {data}")
+            print(f"  Cookies: arl={self.arl_token[:20]}...")
 
-        if 'error' in data:
-            raise RuntimeError(f"Failed to create playlist: {data.get('error', {}).get('message', 'Unknown error')}")
+        response = self._api_call_with_retry('POST', url, data=data)
+
+        if self.debug:
+            print(f"\n[DEBUG] Create Playlist Response:")
+            print(f"  Status: {response.status_code}")
+            print(f"  Body: {response.text[:500]}")
+
+        response_data = response.json()
+
+        if self.debug:
+            print(f"  Parsed: {response_data}")
+
+        if 'error' in response_data:
+            error_msg = response_data.get('error', {})
+            if isinstance(error_msg, dict):
+                error_msg = error_msg.get('message', str(error_msg))
+            raise RuntimeError(f"Failed to create playlist: {error_msg}")
 
         # Private API returns playlist ID in results
-        return str(data.get('results'))
+        playlist_id = response_data.get('results')
+        if not playlist_id:
+            raise RuntimeError(f"No playlist ID in response: {response_data}")
+
+        return str(playlist_id)
 
     def add_tracks_to_playlist(self, playlist_id: str, track_ids: List[str]) -> bool:
         """Add tracks to a playlist.
@@ -312,20 +335,38 @@ class DeezerClient:
             raise RuntimeError("Not authenticated. Call authenticate() first.")
 
         # Use private API for adding tracks (works with ARL authentication)
-        url = f"{self.PRIVATE_API_URL}"
-        params = {
-            'method': 'playlist.addSongs',
-            'api_version': '1.0',
-            'api_token': 'null',
+        url = f"{self.PRIVATE_API_URL}?method=playlist.addSongs&api_version=1.0&api_token=null"
+
+        # Convert list to JSON array format
+        import json
+        data = {
             'playlist_id': playlist_id,
-            'songs': track_ids,  # Private API accepts array of track IDs
+            'songs': json.dumps([[int(tid), 0] for tid in track_ids]),  # Format: [[track_id, position]]
             'offset': -1  # Add to end of playlist
         }
 
-        response = self._api_call_with_retry('POST', url, params=params)
-        data = response.json()
+        if self.debug:
+            print(f"\n[DEBUG] Add Tracks Request:")
+            print(f"  URL: {url}")
+            print(f"  Playlist ID: {playlist_id}")
+            print(f"  Track IDs: {track_ids}")
+            print(f"  Data: {data}")
 
-        if 'error' in data:
+        response = self._api_call_with_retry('POST', url, data=data)
+
+        if self.debug:
+            print(f"\n[DEBUG] Add Tracks Response:")
+            print(f"  Status: {response.status_code}")
+            print(f"  Body: {response.text[:500]}")
+
+        response_data = response.json()
+
+        if self.debug:
+            print(f"  Parsed: {response_data}")
+
+        if 'error' in response_data:
+            if self.debug:
+                print(f"  Error: {response_data['error']}")
             return False
 
         return True

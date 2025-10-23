@@ -92,7 +92,10 @@ def get_deezer_client() -> DeezerClient:
         console.print("Or run 'musicdiff init' to configure")
         sys.exit(1)
 
-    client = DeezerClient(arl_token=arl_token)
+    # Enable debug mode if DEBUG env var is set
+    debug = os.environ.get('DEBUG', '').lower() in ('1', 'true', 'yes')
+
+    client = DeezerClient(arl_token=arl_token, debug=debug)
 
     # Authenticate
     if not client.authenticate():
