@@ -371,7 +371,7 @@ class DeezerClient:
         return str(playlist_id)
 
     def add_tracks_to_playlist(self, playlist_id: str, track_ids: List[str]) -> bool:
-        """Add tracks to a playlist.
+        """Add tracks to a playlist in batches.
 
         Args:
             playlist_id: Deezer playlist ID
@@ -383,62 +383,77 @@ class DeezerClient:
         if not self.user_id:
             raise RuntimeError("Not authenticated. Call authenticate() first.")
 
-        # Use private API for adding tracks (works with ARL authentication)
-        api_token = self.api_token or 'null'
-        url = f"{self.PRIVATE_API_URL}?method=playlist.addSongs&api_version=1.0&api_token={api_token}"
-
-        # Private API requires JSON body with songs as array of arrays: [[track_id, 0], ...]
-        # The second element (0) appears to be a position/index parameter
-        payload = {
-            'playlist_id': playlist_id,
-            'songs': [[int(tid), 0] for tid in track_ids],
-            'offset': -1
-        }
+        # Batch size - Deezer seems to have issues with large batches
+        # Start with 50 tracks per batch as a safe limit
+        batch_size = 50
 
         if self.debug:
-            print(f"\n[DEBUG] Add Tracks Request:")
-            print(f"  URL: {url}")
-            print(f"  Playlist ID: {playlist_id}")
-            print(f"  Track IDs: {track_ids}")
-            print(f"  Payload: {payload}")
+            print(f"\n[DEBUG] Adding {len(track_ids)} tracks in batches of {batch_size}...")
 
-        response = self._api_call_with_retry('POST', url, json=payload)
+        # Process tracks in batches
+        for i in range(0, len(track_ids), batch_size):
+            batch = track_ids[i:i + batch_size]
+            batch_num = (i // batch_size) + 1
+            total_batches = (len(track_ids) + batch_size - 1) // batch_size
+
+            if self.debug:
+                print(f"\n[DEBUG] Processing batch {batch_num}/{total_batches} ({len(batch)} tracks)...")
+
+            # Use private API for adding tracks (works with ARL authentication)
+            api_token = self.api_token or 'null'
+            url = f"{self.PRIVATE_API_URL}?method=playlist.addSongs&api_version=1.0&api_token={api_token}"
+
+            # Private API requires JSON body with songs as array of arrays: [[track_id, 0], ...]
+            # The second element (0) appears to be a position/index parameter
+            payload = {
+                'playlist_id': playlist_id,
+                'songs': [[int(tid), 0] for tid in batch],
+                'offset': -1
+            }
+
+            if self.debug:
+                print(f"  URL: {url}")
+                print(f"  Playlist ID: {playlist_id}")
+                print(f"  Track IDs in batch: {batch}")
+
+            response = self._api_call_with_retry('POST', url, json=payload)
+
+            if self.debug:
+                print(f"  Response Status: {response.status_code}")
+                if response.text:
+                    print(f"  Response Body: {response.text[:500]}")
+
+            # Parse response
+            try:
+                response_data = response.json()
+
+                if self.debug:
+                    print(f"  Parsed Response: {response_data}")
+
+                # Check for errors - empty array or dict means success
+                error = response_data.get('error')
+                if error and (isinstance(error, dict) or (isinstance(error, list) and len(error) > 0)):
+                    if self.debug:
+                        print(f"  ✗ Batch {batch_num} failed: {error}")
+                    return False
+
+                # Check for success result
+                if response_data.get('results') == True:
+                    if self.debug:
+                        print(f"  ✓ Batch {batch_num} added successfully")
+                elif self.debug:
+                    print(f"  ✓ Batch {batch_num} completed (no explicit success flag)")
+
+            except Exception as e:
+                if self.debug:
+                    print(f"  Exception parsing response for batch {batch_num}: {e}")
+                # If we got HTTP 200, assume success
+                if response.status_code != 200:
+                    return False
 
         if self.debug:
-            print(f"\n[DEBUG] Add Tracks Response:")
-            print(f"  Status: {response.status_code}")
-            if response.text:
-                print(f"  Body: {response.text[:200]}")
-
-        # Parse response
-        try:
-            response_data = response.json()
-
-            if self.debug:
-                print(f"  Parsed: {response_data}")
-
-            # Check for errors - empty array or dict means success
-            error = response_data.get('error')
-            if error and (isinstance(error, dict) or (isinstance(error, list) and len(error) > 0)):
-                if self.debug:
-                    print(f"  Error: {error}")
-                return False
-
-            # Check for success result
-            if response_data.get('results') == True:
-                if self.debug:
-                    print(f"  ✓ Tracks added successfully")
-                return True
-
-            if self.debug:
-                print(f"  ✓ Tracks added (no explicit success flag)")
-            return True
-
-        except Exception as e:
-            if self.debug:
-                print(f"  Exception parsing response: {e}")
-            # If we got HTTP 200, assume success
-            return response.status_code == 200
+            print(f"\n[DEBUG] ✓ All batches completed successfully")
+        return True
 
     def remove_tracks_from_playlist(self, playlist_id: str, track_ids: List[str]) -> bool:
         """Remove tracks from a playlist.

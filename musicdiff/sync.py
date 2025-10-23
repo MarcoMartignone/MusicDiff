@@ -542,7 +542,36 @@ class SyncEngine:
                     print(f"[DEBUG] Add operation returned: {add_success}")
 
                 if not add_success:
-                    self.ui.print_error(f"Failed to add tracks to playlist '{spotify_playlist.name}'")
+                    # Add failed - possibly due to Deezer API inconsistency (ERROR_DATA_EXISTS)
+                    # Try to recover by deleting and recreating the playlist
+                    self.ui.print_warning(f"Initial add failed for '{spotify_playlist.name}', attempting recovery...")
+
+                    try:
+                        # Delete the problematic playlist
+                        self.deezer.delete_playlist(deezer_id)
+
+                        # Create a new one
+                        new_deezer_id = self.deezer.create_playlist(
+                            name=spotify_playlist.name,
+                            description=spotify_playlist.description or f"Synced from Spotify",
+                            public=False
+                        )
+
+                        if os.environ.get('DEBUG'):
+                            print(f"[DEBUG] Recreated playlist with new ID: {new_deezer_id}")
+
+                        # Try adding tracks to the new playlist
+                        add_success = self.deezer.add_tracks_to_playlist(new_deezer_id, track_ids)
+
+                        if add_success:
+                            # Update database with new playlist ID
+                            deezer_id = new_deezer_id
+                            self.ui.print_success(f"Recovery successful - recreated playlist '{spotify_playlist.name}'")
+                        else:
+                            self.ui.print_error(f"Failed to add tracks even after recreating playlist '{spotify_playlist.name}'")
+
+                    except Exception as e:
+                        self.ui.print_error(f"Recovery failed for '{spotify_playlist.name}': {e}")
 
         # Update tracking
         self.db.upsert_synced_playlist(
