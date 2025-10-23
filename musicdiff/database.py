@@ -30,6 +30,61 @@ class Database:
         """Create database directory if it doesn't exist."""
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
+    def _column_exists(self, cursor, table_name: str, column_name: str) -> bool:
+        """Check if a column exists in a table."""
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [row[1] for row in cursor.fetchall()]
+        return column_name in columns
+
+    def _migrate_schema(self, conn, cursor):
+        """Migrate database schema from old versions."""
+        # Check if tracks table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
+        tracks_exists = cursor.fetchone() is not None
+
+        if tracks_exists:
+            # Check if we need to migrate from apple_id to deezer_id
+            has_deezer_id = self._column_exists(cursor, 'tracks', 'deezer_id')
+            has_apple_id = self._column_exists(cursor, 'tracks', 'apple_id')
+
+            if has_apple_id and not has_deezer_id:
+                # Migrate from old Apple Music schema to Deezer schema
+                print("Migrating database schema from Apple Music to Deezer...")
+
+                # SQLite doesn't support DROP COLUMN, so we need to recreate the table
+                cursor.execute("""
+                    CREATE TABLE tracks_new (
+                        isrc TEXT PRIMARY KEY,
+                        spotify_id TEXT UNIQUE,
+                        deezer_id TEXT UNIQUE,
+                        title TEXT NOT NULL,
+                        artist TEXT NOT NULL,
+                        album TEXT NOT NULL,
+                        duration_ms INTEGER NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+
+                # Copy data from old table (without apple_id column)
+                cursor.execute("""
+                    INSERT INTO tracks_new (isrc, spotify_id, title, artist, album, duration_ms, created_at, updated_at)
+                    SELECT isrc, spotify_id, title, artist, album, duration_ms, created_at, updated_at
+                    FROM tracks
+                """)
+
+                # Drop old table and rename new one
+                cursor.execute("DROP TABLE tracks")
+                cursor.execute("ALTER TABLE tracks_new RENAME TO tracks")
+
+                conn.commit()
+                print("Migration complete!")
+            elif not has_deezer_id:
+                # Table exists but missing deezer_id column (and no apple_id)
+                # This shouldn't happen, but let's handle it
+                cursor.execute("ALTER TABLE tracks ADD COLUMN deezer_id TEXT UNIQUE")
+                conn.commit()
+
     def init_schema(self):
         """Initialize database schema."""
         conn = sqlite3.connect(self.db_path)
@@ -37,6 +92,9 @@ class Database:
 
         # Enable foreign keys
         cursor.execute("PRAGMA foreign_keys = ON")
+
+        # Run migrations first
+        self._migrate_schema(conn, cursor)
 
         # Tracks table
         cursor.execute("""
