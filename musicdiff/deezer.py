@@ -337,8 +337,10 @@ class DeezerClient:
         if self.debug:
             print(f"  Parsed: {response_data}")
 
-        if 'error' in response_data:
-            error_msg = response_data.get('error', {})
+        # Check for errors - empty array or dict means success
+        error = response_data.get('error')
+        if error and (isinstance(error, dict) or (isinstance(error, list) and len(error) > 0)):
+            error_msg = error
             if isinstance(error_msg, dict):
                 error_msg = error_msg.get('message', str(error_msg))
             raise RuntimeError(f"Failed to create playlist: {error_msg}")
@@ -347,6 +349,9 @@ class DeezerClient:
         playlist_id = response_data.get('results')
         if not playlist_id:
             raise RuntimeError(f"No playlist ID in response: {response_data}")
+
+        if self.debug:
+            print(f"  ✓ Playlist created with ID: {playlist_id}")
 
         return str(playlist_id)
 
@@ -394,10 +399,15 @@ class DeezerClient:
         if self.debug:
             print(f"  Parsed: {response_data}")
 
-        if 'error' in response_data:
+        # Check for errors - empty array or dict means success
+        error = response_data.get('error')
+        if error and (isinstance(error, dict) or (isinstance(error, list) and len(error) > 0)):
             if self.debug:
-                print(f"  Error: {response_data['error']}")
+                print(f"  Error: {error}")
             return False
+
+        if self.debug:
+            print(f"  ✓ Tracks added successfully")
 
         return True
 
@@ -427,7 +437,9 @@ class DeezerClient:
         response = self._api_call_with_retry('POST', url, data=data)
         response_data = response.json()
 
-        if 'error' in response_data and response_data['error']:
+        # Check for errors - empty array or dict means success
+        error = response_data.get('error')
+        if error and (isinstance(error, dict) or (isinstance(error, list) and len(error) > 0)):
             return False
 
         return True
@@ -455,7 +467,9 @@ class DeezerClient:
         response = self._api_call_with_retry('POST', url, data=data)
         response_data = response.json()
 
-        if 'error' in response_data and response_data['error']:
+        # Check for errors - empty array or dict means success
+        error = response_data.get('error')
+        if error and (isinstance(error, dict) or (isinstance(error, list) and len(error) > 0)):
             return False
 
         return True
