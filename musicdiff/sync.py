@@ -388,10 +388,20 @@ class SyncEngine:
         total = len(spotify_tracks)
         matched = 0
         failed = 0
+        failed_tracks = []
+
+        # Show header for track matching
+        self.ui.console.print(f"\n  [dim]Matching tracks for: {playlist_name}[/dim]")
 
         for i, sp_track in enumerate(spotify_tracks, 1):
+            # Truncate long titles/artists for display
+            display_title = sp_track.title[:40] + "..." if len(sp_track.title) > 40 else sp_track.title
+            display_artist = sp_track.artist[:30] + "..." if len(sp_track.artist) > 30 else sp_track.artist
+
             if not sp_track.isrc:
                 failed += 1
+                failed_tracks.append((sp_track.title, sp_track.artist, "No ISRC"))
+                self.ui.console.print(f"  [red]✗[/red] [dim]{display_artist} - {display_title} (no ISRC)[/dim]")
                 continue
 
             # Try to find track on Deezer by ISRC
@@ -409,14 +419,25 @@ class SyncEngine:
                     'album': sp_track.album,
                     'duration_ms': sp_track.duration_ms
                 })
+                # Show success for matched tracks
+                self.ui.console.print(f"  [green]✓[/green] [dim]{display_artist} - {display_title}[/dim]")
             else:
                 failed += 1
+                failed_tracks.append((sp_track.title, sp_track.artist, "Not found on Deezer"))
+                self.ui.console.print(f"  [yellow]⚠[/yellow] [dim]{display_artist} - {display_title} (not found)[/dim]")
 
         stats = {
             'total': total,
             'matched': matched,
-            'failed': failed
+            'failed': failed,
+            'failed_tracks': failed_tracks
         }
+
+        # Show summary
+        if failed > 0:
+            self.ui.console.print(f"  [yellow]⚠ {failed} track(s) could not be matched[/yellow]\n")
+        else:
+            self.ui.console.print(f"  [green]✓ All {matched} tracks matched successfully![/green]\n")
 
         return deezer_ids, stats
 

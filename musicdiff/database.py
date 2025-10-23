@@ -85,6 +85,24 @@ class Database:
                 cursor.execute("ALTER TABLE tracks ADD COLUMN deezer_id TEXT UNIQUE")
                 conn.commit()
 
+        # Check if sync_log table exists and needs migration
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sync_log'")
+        sync_log_exists = cursor.fetchone() is not None
+
+        if sync_log_exists:
+            # Check if we need to add missing columns
+            has_playlists_synced = self._column_exists(cursor, 'sync_log', 'playlists_synced')
+
+            if not has_playlists_synced:
+                print("Migrating sync_log table to add missing columns...")
+                # Add the missing columns
+                cursor.execute("ALTER TABLE sync_log ADD COLUMN playlists_synced INTEGER DEFAULT 0")
+                cursor.execute("ALTER TABLE sync_log ADD COLUMN playlists_created INTEGER DEFAULT 0")
+                cursor.execute("ALTER TABLE sync_log ADD COLUMN playlists_updated INTEGER DEFAULT 0")
+                cursor.execute("ALTER TABLE sync_log ADD COLUMN playlists_deleted INTEGER DEFAULT 0")
+                conn.commit()
+                print("sync_log migration complete!")
+
     def init_schema(self):
         """Initialize database schema."""
         conn = sqlite3.connect(self.db_path)
