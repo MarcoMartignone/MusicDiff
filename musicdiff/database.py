@@ -26,9 +26,29 @@ class Database:
         self.db_path = db_path
         self._ensure_directory()
 
+        # Run migrations on every startup to ensure schema is up to date
+        self._run_migrations()
+
     def _ensure_directory(self):
         """Create database directory if it doesn't exist."""
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+
+    def _run_migrations(self):
+        """Run database migrations if needed."""
+        # Only run migrations if database file exists
+        if not Path(self.db_path).exists():
+            return
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        # Enable foreign keys
+        cursor.execute("PRAGMA foreign_keys = ON")
+
+        # Run migrations
+        self._migrate_schema(conn, cursor)
+
+        conn.close()
 
     def _column_exists(self, cursor, table_name: str, column_name: str) -> bool:
         """Check if a column exists in a table."""
