@@ -97,20 +97,41 @@ class SyncEngine:
             to_delete = []
 
             # Check what needs to be created/updated
+            self.ui.print_info("🔍 Checking playlist status on Deezer...")
+
             for playlist_info in selected:
                 spotify_id = playlist_info['spotify_id']
                 name = playlist_info['name']
                 track_count = playlist_info.get('track_count', 0)
 
-                # Check if already synced
+                # Check if already synced in database
                 synced = self.db.get_synced_playlist(spotify_id)
 
                 if synced:
-                    # Will update existing
-                    to_update.append((name, track_count, synced['deezer_id']))
+                    # Check if the synced playlist still exists on Deezer
+                    playlist_exists = self._check_deezer_playlist_exists(synced['deezer_id'])
+
+                    if playlist_exists:
+                        # Will update existing synced playlist
+                        to_update.append((name, track_count, synced['deezer_id']))
+                    else:
+                        # Synced playlist deleted - check if another with same name exists
+                        existing_id = self._find_existing_deezer_playlist(name)
+                        if existing_id:
+                            # Found another playlist with same name - will update it
+                            to_update.append((name, track_count, existing_id))
+                        else:
+                            # No existing playlist found - will create new
+                            to_create.append((name, track_count))
                 else:
-                    # Will create new
-                    to_create.append((name, track_count))
+                    # Not synced - check if playlist with this name already exists
+                    existing_id = self._find_existing_deezer_playlist(name)
+                    if existing_id:
+                        # Found existing playlist with same name - will update it
+                        to_update.append((name, track_count, existing_id))
+                    else:
+                        # No existing playlist found - will create new
+                        to_create.append((name, track_count))
 
             # Check for deletions (synced playlists no longer selected)
             spotify_playlist_ids = [p['spotify_id'] for p in selected]
@@ -429,13 +450,16 @@ class SyncEngine:
             # Fetch metadata for all playlists
             playlists = self.deezer.fetch_library_playlists_metadata()
 
-            # Debug: show what playlists we found
+            # Debug: show what playlists we found (but only in verbose mode)
             import os
-            if os.environ.get('DEBUG'):
+            if os.environ.get('DEBUG') == 'verbose':
                 print(f"\n[DEBUG] Looking for playlist: '{name}'")
                 print(f"[DEBUG] Found {len(playlists)} playlists on Deezer:")
-                for p in playlists[:10]:  # Show first 10
+                # Show all playlists to see if TEST BABY is there
+                for p in playlists:
                     print(f"  - '{p['title']}' (ID: {p['id']})")
+            elif os.environ.get('DEBUG'):
+                print(f"\n[DEBUG] Looking for playlist: '{name}' in {len(playlists)} playlists...")
 
             # Look for exact name match
             for p in playlists:
