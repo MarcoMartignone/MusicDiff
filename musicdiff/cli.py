@@ -4,6 +4,10 @@ Command-line interface for MusicDiff.
 See docs/CLI.md for detailed documentation.
 """
 
+import warnings
+# Suppress urllib3 OpenSSL warning on macOS
+warnings.filterwarnings('ignore', message='urllib3 v2 only supports OpenSSL 1.1.1+')
+
 import click
 import os
 import sys

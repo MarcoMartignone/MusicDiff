@@ -39,6 +39,36 @@ class UI:
             self.print_warning("No Spotify playlists found.")
             return {}
 
+        # Check if user already has selections
+        selected_count = sum(1 for selected in current_selections.values() if selected)
+
+        if selected_count > 0:
+            # Show current selections first
+            self.console.print()
+            self.console.print(f"[bold green]✓ You currently have {selected_count} playlists selected:[/bold green]\n")
+
+            selected_playlists = [p for p in playlists if current_selections.get(p.get('spotify_id') or p.get('id'), False)]
+            for playlist in selected_playlists[:10]:
+                self.console.print(f"  [green]●[/green] {playlist['name']} [dim]({playlist.get('track_count', 0)} tracks)[/dim]")
+
+            if len(selected_playlists) > 10:
+                self.console.print(f"  [dim]... and {len(selected_playlists) - 10} more[/dim]")
+
+            self.console.print()
+
+            # Ask what they want to do
+            action = Prompt.ask(
+                "What would you like to do?",
+                choices=["keep", "modify", "start-fresh"],
+                default="keep"
+            )
+
+            if action == "keep":
+                self.console.print("[green]✓ Keeping current selection[/green]")
+                return current_selections
+            elif action == "start-fresh":
+                current_selections = {}
+
         # Display header
         self.console.print()
         self.console.print(Panel.fit(
@@ -66,7 +96,7 @@ class UI:
             choice = questionary.Choice(title=choice_text, value=spotify_id)
             choices.append(choice)
 
-            # Mark as default if currently selected AND still exists in Spotify
+            # Mark as default if currently selected
             if current_selections.get(spotify_id, False):
                 default_selected.append(spotify_id)
 
@@ -86,19 +116,11 @@ class UI:
 
         # Show checkbox selection
         try:
-            # Filter defaults to only include playlists that still exist on Spotify
-            valid_defaults = [sid for sid in default_selected if sid in valid_spotify_ids]
-
-            # Only pass default if there are pre-selected items that are valid
             checkbox_kwargs = {
                 "choices": choices,
                 "style": custom_style,
                 "instruction": "(Use arrow keys to move, SPACE to select, ENTER to confirm)"
             }
-
-            # Only add default if there are valid selected items
-            if valid_defaults:
-                checkbox_kwargs["default"] = valid_defaults
 
             selected = questionary.checkbox(
                 "Select playlists to sync:",
