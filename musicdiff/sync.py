@@ -140,6 +140,77 @@ class SyncEngine:
                 if synced_playlist['spotify_id'] not in spotify_playlist_ids:
                     to_delete.append((synced_playlist['name'], synced_playlist['deezer_id']))
 
+            # For playlists marked to update, check if they actually need updating
+            # by comparing Spotify vs Deezer track lists
+            if to_update and not to_create and not to_delete:
+                self.ui.print_info("📊 Comparing playlists to detect changes...")
+
+                # Fetch Spotify playlists to compare
+                spotify_playlists_map = {}
+                for spotify_id in spotify_playlist_ids:
+                    try:
+                        sp_playlist = self.spotify.fetch_playlist_by_id(spotify_id)
+                        if sp_playlist:
+                            spotify_playlists_map[sp_playlist.spotify_id] = sp_playlist
+                    except Exception:
+                        pass  # If fetch fails, we'll sync anyway to be safe
+
+                # Check each playlist for actual changes
+                actually_need_update = []
+                for name, track_count, deezer_id in to_update:
+                    # Find the corresponding Spotify playlist
+                    spotify_playlist = None
+                    for sp_id, sp_pl in spotify_playlists_map.items():
+                        if sp_pl.name == name:
+                            spotify_playlist = sp_pl
+                            break
+
+                    if not spotify_playlist:
+                        # Can't compare, assume needs update
+                        actually_need_update.append((name, track_count, deezer_id))
+                        continue
+
+                    # Fetch Deezer playlist
+                    try:
+                        deezer_playlist = self._fetch_deezer_playlist(deezer_id)
+                        if not deezer_playlist:
+                            # Can't fetch, assume needs update
+                            actually_need_update.append((name, track_count, deezer_id))
+                            continue
+
+                        # Compare track counts first (fast check)
+                        if len(spotify_playlist.tracks) != len(deezer_playlist.tracks):
+                            actually_need_update.append((name, track_count, deezer_id))
+                            continue
+
+                        # Compare tracks by ISRC (reliable cross-platform identifier)
+                        spotify_isrcs = [t.isrc for t in spotify_playlist.tracks if t.isrc]
+                        deezer_isrcs = [t.isrc for t in deezer_playlist.tracks if t.isrc]
+
+                        if spotify_isrcs != deezer_isrcs:
+                            # Tracks are different
+                            actually_need_update.append((name, track_count, deezer_id))
+                        # else: Playlists are identical, skip it
+
+                    except Exception:
+                        # If comparison fails, assume needs update to be safe
+                        actually_need_update.append((name, track_count, deezer_id))
+
+                to_update = actually_need_update
+
+            # If nothing to do, show success message and exit
+            if not to_create and not to_update and not to_delete:
+                self.ui.print_success("✓ All playlists are already in sync! Nothing to do.")
+                duration = time.time() - start_time
+                return SyncResult(
+                    success=True,
+                    playlists_created=0,
+                    playlists_updated=0,
+                    playlists_deleted=0,
+                    failed_operations=[],
+                    duration_seconds=duration
+                )
+
             # Show preview and get confirmation
             if not self.ui.show_sync_preview_detailed(to_create, to_update, to_delete):
                 self.ui.print_info("Sync cancelled")
