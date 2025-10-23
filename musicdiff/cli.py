@@ -468,49 +468,84 @@ def setup():
 @cli.command()
 def init():
     """Initialize MusicDiff and authenticate with music platforms."""
-    console.print("[bold cyan]Initializing MusicDiff...[/bold cyan]\n")
+    console.print()
+    console.print("[bold cyan]🎵 Initializing MusicDiff...[/bold cyan]\n")
 
-    # Create config directory
-    config_dir = get_config_dir()
-    console.print(f"✓ Created config directory: {config_dir}")
+    import time
 
-    # Initialize database
-    db = get_database()
-    db.init_schema()
-    console.print("✓ Initialized database")
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        console=console
+    ) as progress:
+        # Create config directory
+        task = progress.add_task("Creating config directory...", total=None)
+        config_dir = get_config_dir()
+        time.sleep(0.2)
+        progress.update(task, description="[green]✓ Config directory ready")
 
-    # Check credentials
-    console.print("\n[bold]Checking credentials...[/bold]")
+        # Initialize database
+        progress.add_task("[cyan]Setting up database...", total=None)
+        db = get_database()
+        db.init_schema()
+        time.sleep(0.3)
+        progress.update(task, description="[green]✓ Database initialized")
+
+    console.print()
+    console.print("[bold]🔐 Checking credentials...[/bold]\n")
+
+    has_spotify = False
+    has_deezer = False
 
     # Spotify
     if os.environ.get('SPOTIFY_CLIENT_ID') and os.environ.get('SPOTIFY_CLIENT_SECRET'):
-        console.print("✓ Spotify credentials found")
+        console.print("  [green]✓[/green] Spotify credentials found")
         try:
-            spotify = get_spotify_client()
-            console.print(f"✓ Authenticated with Spotify as {spotify.sp.current_user()['display_name']}")
+            with Progress(SpinnerColumn(), TextColumn("[bold blue]{task.description}"), console=console) as progress:
+                task = progress.add_task("Authenticating with Spotify...", total=None)
+                spotify = get_spotify_client()
+                username = spotify.sp.current_user()['display_name']
+                time.sleep(0.2)
+                progress.update(task, description=f"[green]✓ Authenticated as {username}")
+            has_spotify = True
         except Exception as e:
-            console.print(f"[yellow]⚠ Spotify authentication failed: {e}[/yellow]")
+            console.print(f"    [yellow]⚠ Authentication failed: {e}[/yellow]")
     else:
-        console.print("[yellow]⚠ Spotify credentials not set[/yellow]")
-        console.print("  Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET")
+        console.print("  [yellow]⚠[/yellow] Spotify credentials not set")
+        console.print("    [dim]Run 'musicdiff setup' to configure[/dim]")
+
+    console.print()
 
     # Deezer
     if os.environ.get('DEEZER_ARL'):
-        console.print("✓ Deezer credentials found")
+        console.print("  [green]✓[/green] Deezer credentials found")
         try:
-            deezer = get_deezer_client()
-            console.print(f"✓ Authenticated with Deezer (User ID: {deezer.user_id})")
+            with Progress(SpinnerColumn(), TextColumn("[bold blue]{task.description}"), console=console) as progress:
+                task = progress.add_task("Authenticating with Deezer...", total=None)
+                deezer = get_deezer_client()
+                time.sleep(0.2)
+                progress.update(task, description=f"[green]✓ Authenticated (User ID: {deezer.user_id})")
+            has_deezer = True
         except Exception as e:
-            console.print(f"[yellow]⚠ Deezer authentication failed: {e}[/yellow]")
+            console.print(f"    [yellow]⚠ Authentication failed: {e}[/yellow]")
     else:
-        console.print("[yellow]⚠ Deezer credentials not set[/yellow]")
-        console.print("  Set DEEZER_ARL environment variable")
+        console.print("  [yellow]⚠[/yellow] Deezer credentials not set")
+        console.print("    [dim]Run 'musicdiff setup' to configure[/dim]")
 
-    console.print("\n[green bold]✓ Initialization complete![/green bold]")
-    console.print("\nNext steps:")
-    console.print("  1. Set all required environment variables")
-    console.print("  2. Run 'musicdiff status' to check your setup")
-    console.print("  3. Run 'musicdiff sync' to start syncing")
+    console.print()
+
+    # Show completion message
+    if has_spotify and has_deezer:
+        console.print("[green bold]🎉 All set! MusicDiff is ready to rock![/green bold]")
+        console.print("\n[bold]Next steps:[/bold]")
+        console.print("  1. [cyan]musicdiff select[/cyan] - Choose playlists to sync")
+        console.print("  2. [cyan]musicdiff sync[/cyan]   - Transfer to Deezer")
+    elif has_spotify:
+        console.print("[yellow bold]⚠ Almost there! Spotify is set up.[/yellow bold]")
+        console.print("\n[bold]Next step:[/bold] Configure Deezer with [cyan]musicdiff setup[/cyan]")
+    else:
+        console.print("[yellow bold]⚠ Configuration needed[/yellow bold]")
+        console.print("\n[bold]Next step:[/bold] Run [cyan]musicdiff setup[/cyan] to get started")
 
 
 @cli.command()
@@ -624,22 +659,66 @@ def select():
     Opens an interactive checkbox interface to choose playlists.
     Selected playlists will be synced when you run 'musicdiff sync'.
     """
-    console.print("[bold cyan]Fetching your Spotify playlists...[/bold cyan]\n")
+    from rich.live import Live
+    from rich.spinner import Spinner
+    from rich.text import Text
 
     db = get_database()
     spotify = get_spotify_client()
     ui = UI()
 
-    # Fetch all Spotify playlists
-    try:
-        sp_playlists = spotify.fetch_playlists()
-    except Exception as e:
-        console.print(f"[red]Error fetching Spotify playlists: {e}[/red]")
-        sys.exit(1)
+    # Fetch all Spotify playlists with fun progress
+    sp_playlists = None
+
+    fun_messages = [
+        "🎵 Connecting to Spotify...",
+        "🎧 Loading your playlists...",
+        "📻 Fetching playlist data...",
+        "🎶 Almost there...",
+        "✨ Polishing the data..."
+    ]
+
+    console.print()
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold cyan]{task.description}"),
+        console=console
+    ) as progress:
+        task = progress.add_task(fun_messages[0], total=None)
+
+        import time
+        for i, msg in enumerate(fun_messages[:3]):
+            progress.update(task, description=msg)
+            time.sleep(0.3)
+
+        try:
+            sp_playlists = spotify.fetch_playlists()
+            progress.update(task, description="[green]✓ Playlists loaded!")
+            time.sleep(0.3)
+        except Exception as e:
+            progress.update(task, description="[red]✗ Failed to fetch playlists")
+            console.print()
+            console.print(f"[red]Error: {e}[/red]")
+            sys.exit(1)
+
+    console.print()
 
     if not sp_playlists:
-        console.print("[yellow]No Spotify playlists found[/yellow]")
+        console.print("[yellow]⚠ No Spotify playlists found[/yellow]")
+        console.print("[dim]Create some playlists on Spotify first![/dim]")
         return
+
+    # Show count with fun message
+    count = len(sp_playlists)
+    if count == 1:
+        console.print(f"[cyan]Found {count} playlist! 🎵[/cyan]")
+    elif count < 10:
+        console.print(f"[cyan]Found {count} playlists! 🎶[/cyan]")
+    elif count < 50:
+        console.print(f"[cyan]Wow! Found {count} playlists! 🎸[/cyan]")
+    else:
+        console.print(f"[cyan]Holy moly! {count} playlists! You're a music legend! 🎹🎺🎻[/cyan]")
+    console.print()
 
     # Convert to simple dicts
     playlist_dicts = []
@@ -669,10 +748,21 @@ def select():
             selected=selected
         )
 
-    # Show summary
+    # Show summary with fun messages
     selected_count = sum(1 for selected in new_selections.values() if selected)
-    console.print(f"\n[green]✓ Selection saved: {selected_count}/{len(playlist_dicts)} playlists selected[/green]")
-    console.print("\nRun [cyan]musicdiff sync[/cyan] to transfer selected playlists to Deezer")
+
+    if selected_count == 0:
+        console.print("\n[yellow]⚠ No playlists selected[/yellow]")
+        console.print("[dim]Select at least one playlist to sync![/dim]")
+    elif selected_count == 1:
+        console.print(f"\n[green]✓ Got it! 1 playlist ready to sync[/green] 🎵")
+        console.print("\n[bold]Next step:[/bold] Run [cyan]musicdiff sync[/cyan] to transfer to Deezer")
+    elif selected_count == len(playlist_dicts):
+        console.print(f"\n[green]✓ All {selected_count} playlists selected! Going for the full collection, nice![/green] 🎸")
+        console.print("\n[bold]Next step:[/bold] Run [cyan]musicdiff sync[/cyan] to transfer to Deezer")
+    else:
+        console.print(f"\n[green]✓ Selection saved: {selected_count}/{len(playlist_dicts)} playlists ready[/green] 🎶")
+        console.print("\n[bold]Next step:[/bold] Run [cyan]musicdiff sync[/cyan] to transfer to Deezer")
 
 
 @cli.command()
@@ -684,18 +774,33 @@ def list():
     db = get_database()
     ui = UI()
 
-    # Get playlist selections from database
-    selections = db.get_all_playlist_selections()
+    console.print()
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold cyan]{task.description}"),
+        console=console
+    ) as progress:
+        task = progress.add_task("📋 Loading your playlists...", total=None)
 
-    if not selections:
-        console.print("[yellow]No playlists found in database.[/yellow]")
-        console.print("Run [cyan]musicdiff select[/cyan] to choose playlists to sync")
-        return
+        # Get playlist selections from database
+        selections = db.get_all_playlist_selections()
 
-    # Get synced playlists
-    synced = db.get_all_synced_playlists()
-    synced_dict = {s['spotify_id']: s for s in synced}
+        if not selections:
+            progress.update(task, description="[yellow]⚠ No playlists found")
+            console.print()
+            console.print("[yellow]No playlists found in database.[/yellow]")
+            console.print("Run [cyan]musicdiff select[/cyan] to choose playlists to sync")
+            return
 
+        # Get synced playlists
+        synced = db.get_all_synced_playlists()
+        synced_dict = {s['spotify_id']: s for s in synced}
+
+        progress.update(task, description="[green]✓ Playlists loaded!")
+        import time
+        time.sleep(0.2)
+
+    console.print()
     # Show list
     ui.show_playlist_list(selections, synced_dict)
 
@@ -710,10 +815,13 @@ def sync(dry_run):
 
     Use --dry-run to preview changes without applying them.
     """
+    console.print()
+
     if dry_run:
-        console.print("[dim]DRY RUN - No changes will be applied[/dim]\n")
+        console.print("[dim]🔍 DRY RUN MODE - Previewing changes (no actual sync)[/dim]\n")
         mode = SyncMode.DRY_RUN
     else:
+        console.print("[bold cyan]🚀 Starting playlist sync to Deezer...[/bold cyan]\n")
         mode = SyncMode.NORMAL
 
     # Get sync engine and run sync
@@ -721,13 +829,28 @@ def sync(dry_run):
         sync_engine = get_sync_engine()
         result = sync_engine.sync(mode=mode)
 
-        # Show summary
+        # Show summary with celebration
         if not dry_run:
+            console.print()
             ui = UI()
             ui.show_sync_summary(result)
 
+            # Fun messages based on result
+            if result.success:
+                if result.total_synced == 0:
+                    console.print("[cyan]Everything's already in sync! Nothing to do here. 😎[/cyan]")
+                elif result.total_synced == 1:
+                    console.print("[green]🎵 Playlist synced! Your music is flowing to Deezer![/green]")
+                elif result.total_synced < 5:
+                    console.print("[green]🎶 Nice! Your playlists are now on Deezer![/green]")
+                else:
+                    console.print("[green]🎸 Boom! All your playlists are synced! Rock on! 🤘[/green]")
+            else:
+                console.print("[yellow]⚠ Sync completed with some issues - check the errors above[/yellow]")
+
     except Exception as e:
-        console.print(f"[red]Sync failed: {e}[/red]")
+        console.print(f"\n[red]✗ Sync failed: {e}[/red]")
+        console.print("[dim]Check your credentials and network connection[/dim]")
         sys.exit(1)
 
 
