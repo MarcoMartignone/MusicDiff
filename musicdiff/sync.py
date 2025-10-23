@@ -494,13 +494,36 @@ class SyncEngine:
 
         # Playlist exists - do full overwrite
         # First, get current tracks
+        import os
+        if os.environ.get('DEBUG'):
+            print(f"\n[DEBUG] Fetching Deezer playlist {deezer_id} to check for existing tracks...")
+
         deezer_playlist = self._fetch_deezer_playlist(deezer_id)
+
+        if os.environ.get('DEBUG'):
+            if deezer_playlist:
+                track_count = len(deezer_playlist.tracks) if deezer_playlist.tracks else 0
+                print(f"[DEBUG] Deezer playlist fetched: {track_count} tracks found")
+            else:
+                print(f"[DEBUG] Failed to fetch Deezer playlist (returned None)")
 
         if deezer_playlist and deezer_playlist.tracks:
             # Remove all current tracks
             current_track_ids = [t.deezer_id for t in deezer_playlist.tracks if t.deezer_id]
             if current_track_ids:
-                self.deezer.remove_tracks_from_playlist(deezer_id, current_track_ids)
+                if os.environ.get('DEBUG'):
+                    print(f"[DEBUG] Removing {len(current_track_ids)} existing tracks from playlist...")
+
+                remove_success = self.deezer.remove_tracks_from_playlist(deezer_id, current_track_ids)
+
+                if os.environ.get('DEBUG'):
+                    print(f"[DEBUG] Remove operation returned: {remove_success}")
+
+                if not remove_success:
+                    self.ui.print_warning(f"Failed to remove existing tracks from playlist")
+        else:
+            if os.environ.get('DEBUG'):
+                print(f"[DEBUG] Skipping remove - playlist has no tracks to remove")
 
         # Add tracks from Spotify
         match_stats = {'total': 0, 'matched': 0, 'failed': 0}
@@ -510,7 +533,16 @@ class SyncEngine:
                 spotify_playlist.name
             )
             if track_ids:
-                self.deezer.add_tracks_to_playlist(deezer_id, track_ids)
+                if os.environ.get('DEBUG'):
+                    print(f"[DEBUG] Adding {len(track_ids)} tracks to playlist...")
+
+                add_success = self.deezer.add_tracks_to_playlist(deezer_id, track_ids)
+
+                if os.environ.get('DEBUG'):
+                    print(f"[DEBUG] Add operation returned: {add_success}")
+
+                if not add_success:
+                    self.ui.print_error(f"Failed to add tracks to playlist '{spotify_playlist.name}'")
 
         # Update tracking
         self.db.upsert_synced_playlist(
