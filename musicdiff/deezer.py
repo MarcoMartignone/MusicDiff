@@ -148,6 +148,36 @@ class DeezerClient:
 
         return playlists
 
+    def fetch_playlist_by_id(self, playlist_id: str) -> Optional[Playlist]:
+        """Fetch a single playlist by ID with full track data.
+
+        Args:
+            playlist_id: Deezer playlist ID
+
+        Returns:
+            Playlist object or None if not found
+        """
+        try:
+            # Fetch playlist metadata
+            url = f"{self.BASE_URL}/playlist/{playlist_id}"
+            response = self._api_call_with_retry('GET', url)
+            data = response.json()
+
+            if 'error' in data:
+                return None
+
+            # Parse playlist
+            playlist = self._parse_playlist(data)
+
+            # Fetch tracks
+            tracks = self._fetch_playlist_tracks(playlist_id)
+            playlist.tracks = tracks
+
+            return playlist
+
+        except Exception:
+            return None
+
     def fetch_library_playlists(self) -> List[Playlist]:
         """Fetch all playlists from user's library with full track data.
 

@@ -326,7 +326,25 @@ class SyncEngine:
         Returns:
             Match statistics dict
         """
-        # Full overwrite: delete all tracks and re-add from Spotify
+        # Check if playlist still exists on Deezer
+        playlist_exists = self._check_deezer_playlist_exists(deezer_id)
+
+        if not playlist_exists:
+            # Playlist was deleted from Deezer - recreate it
+            self.ui.print_warning(f"Playlist '{spotify_playlist.name}' no longer exists on Deezer - recreating...")
+            new_deezer_id, match_stats = self._create_deezer_playlist(spotify_playlist, progress)
+
+            # Update the database with new Deezer ID
+            self.db.upsert_synced_playlist(
+                spotify_id=spotify_playlist.spotify_id,
+                deezer_id=new_deezer_id,
+                name=spotify_playlist.name,
+                track_count=len(spotify_playlist.tracks)
+            )
+
+            return match_stats
+
+        # Playlist exists - do full overwrite
         # First, get current tracks
         deezer_playlist = self._fetch_deezer_playlist(deezer_id)
 
@@ -356,6 +374,22 @@ class SyncEngine:
 
         return match_stats
 
+    def _check_deezer_playlist_exists(self, deezer_id: str) -> bool:
+        """Check if a Deezer playlist exists (fast metadata check).
+
+        Args:
+            deezer_id: Deezer playlist ID
+
+        Returns:
+            True if playlist exists, False otherwise
+        """
+        try:
+            # Fast check - just fetch metadata, not tracks
+            playlists = self.deezer.fetch_library_playlists_metadata()
+            return any(str(p['id']) == str(deezer_id) for p in playlists)
+        except Exception:
+            return False
+
     def _fetch_deezer_playlist(self, deezer_id: str):
         """Fetch single Deezer playlist by ID.
 
@@ -366,11 +400,8 @@ class SyncEngine:
             Playlist object or None
         """
         try:
-            all_playlists = self.deezer.fetch_library_playlists()
-            for playlist in all_playlists:
-                if playlist.deezer_id == deezer_id:
-                    return playlist
-            return None
+            # Use efficient single playlist fetch instead of fetching all playlists
+            return self.deezer.fetch_playlist_by_id(deezer_id)
         except Exception:
             return None
 
