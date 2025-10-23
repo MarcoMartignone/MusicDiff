@@ -292,6 +292,59 @@ class UI:
         self.console.print(f"[bold]Total:[/bold] {total} playlists will be synced to Deezer")
         self.console.print()
 
+    def show_sync_preview_detailed(self, to_create: List[Tuple], to_update: List[Tuple], to_delete: List[Tuple]) -> bool:
+        """Show detailed preview of sync actions and ask for confirmation.
+
+        Args:
+            to_create: List of (name, track_count) tuples for playlists to create
+            to_update: List of (name, track_count, deezer_id) tuples for playlists to update
+            to_delete: List of (name, deezer_id) tuples for playlists to delete
+
+        Returns:
+            True if user confirms, False otherwise
+        """
+        self.console.print()
+        self.console.print(Panel.fit(
+            "[bold cyan]🔄 Sync Preview[/bold cyan]\n\n"
+            "Review what will happen when you sync",
+            border_style="cyan"
+        ))
+        self.console.print()
+
+        if to_create:
+            self.console.print(f"[bold green]✨ Will Create on Deezer ({len(to_create)} playlists):[/bold green]")
+            for name, track_count in to_create:
+                self.console.print(f"  [green]+[/green] {name} [dim]({track_count} tracks)[/dim]")
+            self.console.print()
+
+        if to_update:
+            self.console.print(f"[bold yellow]🔄 Will Update on Deezer ({len(to_update)} playlists):[/bold yellow]")
+            self.console.print("[dim]  (Full overwrite - all tracks will be replaced with Spotify version)[/dim]")
+            for name, track_count, deezer_id in to_update:
+                self.console.print(f"  [yellow]~[/yellow] {name} [dim]({track_count} tracks)[/dim]")
+            self.console.print()
+
+        if to_delete:
+            self.console.print(f"[bold red]🗑️  Will Delete from Deezer ({len(to_delete)} playlists):[/bold red]")
+            self.console.print("[dim]  (These playlists are no longer selected)[/dim]")
+            for name, deezer_id in to_delete:
+                self.console.print(f"  [red]-[/red] {name}")
+            self.console.print()
+
+        if not (to_create or to_update or to_delete):
+            self.console.print("[dim]No changes to make - everything is already in sync[/dim]\n")
+            return False
+
+        # Summary
+        total_actions = len(to_create) + len(to_update) + len(to_delete)
+        total_tracks = sum(count for _, count in to_create) + sum(count for _, count, _ in to_update)
+
+        self.console.print(f"[bold]Summary:[/bold] {total_actions} playlists affected, ~{total_tracks} tracks to sync")
+        self.console.print()
+
+        # Ask for confirmation
+        return self.confirm("Proceed with sync?", default=True)
+
     def show_sync_preview(self, to_create: List[str], to_update: List[str], to_delete: List[str]):
         """Show preview of what will be synced.
 

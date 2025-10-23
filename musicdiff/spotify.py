@@ -239,6 +239,73 @@ class SpotifyClient:
 
         return playlists
 
+    def fetch_playlist_by_id(self, playlist_id: str, progress_callback=None) -> Optional[Playlist]:
+        """Fetch a single playlist by ID with full track data.
+
+        Args:
+            playlist_id: Spotify playlist ID
+            progress_callback: Optional callback function(current, total, playlist_name)
+
+        Returns:
+            Playlist object or None if not found
+        """
+        if not self.sp:
+            raise RuntimeError("Not authenticated. Call authenticate() first.")
+
+        try:
+            # Fetch playlist data
+            playlist_data = self._api_call_with_retry(
+                self.sp.playlist,
+                playlist_id
+            )
+
+            if progress_callback:
+                progress_callback(1, 1, playlist_data['name'])
+
+            # Extract track data with pagination
+            tracks = []
+            track_items = playlist_data['tracks']['items']
+            track_offset = len(track_items)
+
+            # Parse initial tracks
+            for track_item in track_items:
+                if track_item['track']:  # Can be None for deleted tracks
+                    track = self._parse_track(track_item['track'])
+                    tracks.append(track)
+
+            # Handle playlist track pagination (if more than 100 tracks)
+            while playlist_data['tracks']['next']:
+                more_tracks = self._api_call_with_retry(
+                    self.sp.playlist_items,
+                    playlist_id,
+                    limit=100,
+                    offset=track_offset
+                )
+
+                for track_item in more_tracks['items']:
+                    if track_item['track']:
+                        track = self._parse_track(track_item['track'])
+                        tracks.append(track)
+
+                track_offset += len(more_tracks['items'])
+
+                if not more_tracks['next']:
+                    break
+
+            playlist = Playlist(
+                spotify_id=playlist_data['id'],
+                name=playlist_data['name'],
+                description=playlist_data.get('description', ''),
+                public=playlist_data['public'],
+                tracks=tracks,
+                snapshot_id=playlist_data['snapshot_id'],
+            )
+
+            return playlist
+
+        except Exception as e:
+            return None
+
     def fetch_liked_songs(self) -> List[Track]:
         """Fetch all liked/saved tracks.
 

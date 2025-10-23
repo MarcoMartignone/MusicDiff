@@ -91,10 +91,48 @@ class SyncEngine:
                     duration_seconds=duration
                 )
 
-            self.ui.print_info(f"Syncing {len(selected)} selected playlists to Deezer...")
+            # Build preview data
+            to_create = []
+            to_update = []
+            to_delete = []
+
+            # Check what needs to be created/updated
+            for playlist_info in selected:
+                spotify_id = playlist_info['spotify_id']
+                name = playlist_info['name']
+                track_count = playlist_info.get('track_count', 0)
+
+                # Check if already synced
+                synced = self.db.get_synced_playlist(spotify_id)
+
+                if synced:
+                    # Will update existing
+                    to_update.append((name, track_count, synced['deezer_id']))
+                else:
+                    # Will create new
+                    to_create.append((name, track_count))
+
+            # Check for deletions (synced playlists no longer selected)
+            spotify_playlist_ids = [p['spotify_id'] for p in selected]
+            all_synced = self.db.get_all_synced_playlists()
+            for synced_playlist in all_synced:
+                if synced_playlist['spotify_id'] not in spotify_playlist_ids:
+                    to_delete.append((synced_playlist['name'], synced_playlist['deezer_id']))
+
+            # Show preview and get confirmation
+            if not self.ui.show_sync_preview_detailed(to_create, to_update, to_delete):
+                self.ui.print_info("Sync cancelled")
+                duration = time.time() - start_time
+                return SyncResult(
+                    success=True,
+                    playlists_created=0,
+                    playlists_updated=0,
+                    playlists_deleted=0,
+                    failed_operations=[],
+                    duration_seconds=duration
+                )
 
             # Fetch selected playlists from Spotify
-            spotify_playlist_ids = [p['spotify_id'] for p in selected]
             spotify_playlists = self._fetch_spotify_playlists(spotify_playlist_ids)
 
             if mode == SyncMode.DRY_RUN:
@@ -111,21 +149,36 @@ class SyncEngine:
                 )
 
             # Sync each selected playlist
+            self.ui.print_info(f"\n🔄 Starting sync of {len(spotify_playlists)} playlists...\n")
+
             with self.ui.create_progress("Syncing playlists") as progress:
                 task = progress.add_task("Processing...", total=len(spotify_playlists))
 
-                for sp_playlist in spotify_playlists:
+                for i, sp_playlist in enumerate(spotify_playlists, 1):
                     try:
+                        progress.update(
+                            task,
+                            completed=i-1,
+                            description=f"🎶 Syncing: {sp_playlist.name[:40]}... ({i}/{len(spotify_playlists)})"
+                        )
+
                         # Check if already synced to Deezer
                         synced = self.db.get_synced_playlist(sp_playlist.spotify_id)
 
                         if synced:
                             # Update existing Deezer playlist (full overwrite)
-                            self._update_deezer_playlist(synced['deezer_id'], sp_playlist)
+                            match_stats = self._update_deezer_playlist(synced['deezer_id'], sp_playlist, progress)
                             updated += 1
+
+                            # Show match statistics
+                            if match_stats:
+                                self.ui.print_success(
+                                    f"Updated: {sp_playlist.name} - "
+                                    f"{match_stats['matched']}/{match_stats['total']} tracks matched"
+                                )
                         else:
                             # Create new Deezer playlist
-                            deezer_id = self._create_deezer_playlist(sp_playlist)
+                            deezer_id, match_stats = self._create_deezer_playlist(sp_playlist, progress)
                             # Track it in database
                             self.db.upsert_synced_playlist(
                                 spotify_id=sp_playlist.spotify_id,
@@ -135,6 +188,13 @@ class SyncEngine:
                             )
                             created += 1
 
+                            # Show match statistics
+                            if match_stats:
+                                self.ui.print_success(
+                                    f"Created: {sp_playlist.name} - "
+                                    f"{match_stats['matched']}/{match_stats['total']} tracks matched"
+                                )
+
                         # Mark as synced
                         self.db.mark_playlist_synced(sp_playlist.spotify_id)
 
@@ -142,7 +202,7 @@ class SyncEngine:
                         failed.append((sp_playlist.name, str(e)))
                         self.ui.print_error(f"Failed to sync '{sp_playlist.name}': {e}")
 
-                    progress.update(task, advance=1)
+                    progress.update(task, completed=i)
 
             # Delete deselected playlists from Deezer
             deleted = self._delete_deselected_playlists(spotify_playlist_ids)
@@ -191,7 +251,7 @@ class SyncEngine:
             )
 
     def _fetch_spotify_playlists(self, playlist_ids: List[str]) -> List:
-        """Fetch Spotify playlists by ID.
+        """Fetch Spotify playlists by ID with progress.
 
         Args:
             playlist_ids: List of Spotify playlist IDs
@@ -200,22 +260,41 @@ class SyncEngine:
             List of Playlist objects with tracks
         """
         playlists = []
-        all_playlists = self.spotify.fetch_playlists()
+        total = len(playlist_ids)
 
-        for playlist in all_playlists:
-            if playlist.spotify_id in playlist_ids:
-                playlists.append(playlist)
+        self.ui.print_info(f"🎵 Fetching {total} playlists from Spotify...")
+
+        with self.ui.create_progress("Fetching playlists") as progress:
+            task = progress.add_task("Loading...", total=total)
+
+            for i, playlist_id in enumerate(playlist_ids, 1):
+                try:
+                    # Fetch single playlist by ID
+                    playlist = self.spotify.fetch_playlist_by_id(playlist_id)
+                    if playlist:
+                        playlists.append(playlist)
+                        progress.update(
+                            task,
+                            completed=i,
+                            description=f"🎵 Fetching: {playlist.name[:40]}... ({i}/{total})"
+                        )
+                    else:
+                        progress.update(task, advance=1)
+                except Exception as e:
+                    self.ui.print_error(f"Failed to fetch playlist {playlist_id}: {e}")
+                    progress.update(task, advance=1)
 
         return playlists
 
-    def _create_deezer_playlist(self, spotify_playlist) -> str:
+    def _create_deezer_playlist(self, spotify_playlist, progress=None):
         """Create new playlist on Deezer.
 
         Args:
             spotify_playlist: Spotify Playlist object
+            progress: Optional progress object for updates
 
         Returns:
-            Deezer playlist ID
+            Tuple of (Deezer playlist ID, match statistics dict)
         """
         # Create playlist
         deezer_id = self.deezer.create_playlist(
@@ -225,19 +304,27 @@ class SyncEngine:
         )
 
         # Add tracks
+        match_stats = {'total': 0, 'matched': 0, 'failed': 0}
         if spotify_playlist.tracks:
-            track_ids = self._match_tracks_to_deezer(spotify_playlist.tracks)
+            track_ids, match_stats = self._match_tracks_to_deezer(
+                spotify_playlist.tracks,
+                spotify_playlist.name
+            )
             if track_ids:
                 self.deezer.add_tracks_to_playlist(deezer_id, track_ids)
 
-        return deezer_id
+        return deezer_id, match_stats
 
-    def _update_deezer_playlist(self, deezer_id: str, spotify_playlist) -> None:
+    def _update_deezer_playlist(self, deezer_id: str, spotify_playlist, progress=None):
         """Update Deezer playlist with full overwrite from Spotify.
 
         Args:
             deezer_id: Deezer playlist ID
             spotify_playlist: Spotify Playlist object
+            progress: Optional progress object for updates
+
+        Returns:
+            Match statistics dict
         """
         # Full overwrite: delete all tracks and re-add from Spotify
         # First, get current tracks
@@ -250,8 +337,12 @@ class SyncEngine:
                 self.deezer.remove_tracks_from_playlist(deezer_id, current_track_ids)
 
         # Add tracks from Spotify
+        match_stats = {'total': 0, 'matched': 0, 'failed': 0}
         if spotify_playlist.tracks:
-            track_ids = self._match_tracks_to_deezer(spotify_playlist.tracks)
+            track_ids, match_stats = self._match_tracks_to_deezer(
+                spotify_playlist.tracks,
+                spotify_playlist.name
+            )
             if track_ids:
                 self.deezer.add_tracks_to_playlist(deezer_id, track_ids)
 
@@ -262,6 +353,8 @@ class SyncEngine:
             name=spotify_playlist.name,
             track_count=len(spotify_playlist.tracks)
         )
+
+        return match_stats
 
     def _fetch_deezer_playlist(self, deezer_id: str):
         """Fetch single Deezer playlist by ID.
@@ -281,25 +374,31 @@ class SyncEngine:
         except Exception:
             return None
 
-    def _match_tracks_to_deezer(self, spotify_tracks: List) -> List[str]:
-        """Match Spotify tracks to Deezer track IDs.
+    def _match_tracks_to_deezer(self, spotify_tracks: List, playlist_name: str = ""):
+        """Match Spotify tracks to Deezer track IDs with statistics.
 
         Args:
             spotify_tracks: List of Spotify Track objects
+            playlist_name: Name of playlist (for progress display)
 
         Returns:
-            List of Deezer track IDs
+            Tuple of (List of Deezer track IDs, statistics dict)
         """
         deezer_ids = []
+        total = len(spotify_tracks)
+        matched = 0
+        failed = 0
 
-        for sp_track in spotify_tracks:
+        for i, sp_track in enumerate(spotify_tracks, 1):
             if not sp_track.isrc:
+                failed += 1
                 continue
 
             # Try to find track on Deezer by ISRC
             dz_track = self.deezer.search_track(isrc=sp_track.isrc)
             if dz_track and dz_track.deezer_id:
                 deezer_ids.append(dz_track.deezer_id)
+                matched += 1
                 # Cache the match in database
                 self.db.upsert_track({
                     'isrc': sp_track.isrc,
@@ -310,8 +409,16 @@ class SyncEngine:
                     'album': sp_track.album,
                     'duration_ms': sp_track.duration_ms
                 })
+            else:
+                failed += 1
 
-        return deezer_ids
+        stats = {
+            'total': total,
+            'matched': matched,
+            'failed': failed
+        }
+
+        return deezer_ids, stats
 
     def _delete_deselected_playlists(self, selected_ids: List[str]) -> int:
         """Delete playlists from Deezer that are no longer selected.
