@@ -59,45 +59,20 @@ class UI:
 
         # Prepare choices for questionary
         choices = []
-        default_selected = []
 
         for playlist in playlists:
             spotify_id = playlist.get('spotify_id') or playlist.get('id')
             name = playlist['name']
             track_count = playlist.get('track_count', 0)
 
+            # Check if this playlist is currently selected
+            is_selected = current_selections.get(spotify_id, False)
+
             # Create choice with name and track count
+            # Use 'checked' parameter to pre-select instead of 'default' parameter
             choice_text = f"{name} ({track_count} tracks)"
-            choice = questionary.Choice(title=choice_text, value=spotify_id)
+            choice = questionary.Choice(title=choice_text, value=spotify_id, checked=is_selected)
             choices.append(choice)
-
-            # Mark as default if currently selected AND exists in current playlist list
-            # (only add to default if this playlist still exists)
-            if current_selections.get(spotify_id, False):
-                default_selected.append(spotify_id)
-
-        # Validate default_selected - only include IDs that exist in choices
-        # Build set of valid choice values for fast lookup
-        valid_choice_values = {choice.value for choice in choices}
-        validated_defaults = [sid for sid in default_selected if sid in valid_choice_values]
-
-        # Debug output if DEBUG env var is set
-        if os.environ.get('DEBUG'):
-            print(f"\n[DEBUG] Playlist Selection Debug Info:")
-            print(f"[DEBUG] Total playlists from API: {len(playlists)}")
-            print(f"[DEBUG] Current selections dict: {current_selections}")
-            print(f"[DEBUG] default_selected (from current_selections): {default_selected}")
-            print(f"[DEBUG] valid_choice_values (from choices): {valid_choice_values}")
-            print(f"[DEBUG] validated_defaults (after filtering): {validated_defaults}")
-            print(f"[DEBUG] Choice objects:")
-            for i, choice in enumerate(choices[:3]):  # Show first 3
-                print(f"[DEBUG]   Choice {i}: title={choice.title[:50]}, value={choice.value}")
-            print()
-
-        # Debug: show if any defaults were filtered out
-        if len(default_selected) != len(validated_defaults):
-            filtered_count = len(default_selected) - len(validated_defaults)
-            self.console.print(f"[dim]Note: {filtered_count} previously selected playlist(s) no longer exist[/dim]")
 
         # Custom styling for the checkbox
         custom_style = Style([
@@ -115,16 +90,11 @@ class UI:
 
         # Show checkbox selection
         try:
-            checkbox_kwargs = {
-                "choices": choices,
-                "default": validated_defaults,  # Pre-select currently selected playlists (validated)
-                "style": custom_style,
-                "instruction": "(Use arrow keys to move, SPACE to select, ENTER to confirm)"
-            }
-
             selected = questionary.checkbox(
                 "Select playlists to sync:",
-                **checkbox_kwargs
+                choices=choices,
+                style=custom_style,
+                instruction="(Use arrow keys to move, SPACE to select, ENTER to confirm)"
             ).ask()
 
             if selected is None:
