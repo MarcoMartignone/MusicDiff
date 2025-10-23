@@ -2,271 +2,242 @@
 
 ## Overview
 
-The Database module (`database.py`) manages local state storage using SQLite. It acts as the "last known good state" for the 3-way merge algorithm and stores sync history.
+The Database module (`database.py`) manages local state storage using SQLite. It tracks playlist selections, sync status, track matching cache, and sync history for one-way Spotify to Deezer synchronization.
 
 ## Technology
 
 - **SQLite3**: Embedded relational database
-- **Location**: `~/.musicdiff/musicdiff.db`
-- **Migrations**: Schema versioning for future updates
+- **Location**: `~/.musicdiff/musicdiff.db` (default) or custom path
+- **Schema Version**: 2 (stored in metadata table)
+- **No migrations needed**: Simple schema, clean install
 
 ## Schema
 
 ### Entity Relationship Diagram
 
 ```
-┌──────────────┐         ┌──────────────┐
-│   tracks     │         │  playlists   │
-│──────────────│         │──────────────│
-│ isrc (PK)    │         │ id (PK)      │
-│ spotify_id   │    ┌────│ spotify_id   │
-│ apple_id     │    │    │ apple_id     │
-│ title        │    │    │ name         │
-│ artist       │    │    │ description  │
-│ album        │    │    │ snapshot_id  │
-│ duration_ms  │    │    │ created_at   │
-│ updated_at   │    │    │ updated_at   │
-└──────┬───────┘    │    └──────┬───────┘
-       │            │           │
-       │            │           │
-       │      ┌─────▼───────────▼─────┐
-       │      │  playlist_tracks      │
-       │      │───────────────────────│
-       └──────► playlist_id (FK)      │
-              │ track_isrc (FK)       │
-              │ position              │
-              │ added_at              │
-              └───────────────────────┘
+┌──────────────────────┐
+│   tracks             │
+│──────────────────────│
+│ isrc (PK)            │
+│ spotify_id (UNIQUE)  │
+│ deezer_id (UNIQUE)   │
+│ title                │
+│ artist               │
+│ album                │
+│ duration_ms          │
+│ created_at           │
+│ updated_at           │
+└──────────────────────┘
 
-┌──────────────┐         ┌──────────────┐
-│ liked_songs  │         │   albums     │
-│──────────────│         │──────────────│
-│ track_isrc   │         │ id (PK)      │
-│ added_at     │         │ spotify_id   │
-└──────────────┘         │ apple_id     │
-                         │ name         │
-┌──────────────┐         │ artist       │
-│  sync_log    │         └──────────────┘
-│──────────────│
-│ id (PK)      │         ┌──────────────┐
-│ timestamp    │         │  conflicts   │
-│ status       │         │──────────────│
-│ changes      │         │ id (PK)      │
-│ conflicts    │         │ type         │
-│ details      │         │ entity_id    │
-└──────────────┘         │ data         │
-                         │ created_at   │
-                         └──────────────┘
+┌────────────────────────────┐        ┌──────────────────────────┐
+│ playlist_selections        │        │ synced_playlists         │
+│────────────────────────────│        │──────────────────────────│
+│ spotify_id (PK)            │───────┼│ spotify_id (PK, FK)      │
+│ name                       │        │ deezer_id                │
+│ track_count                │        │ name                     │
+│ selected (BOOLEAN)         │        │ track_count              │
+│ last_synced (TIMESTAMP)    │        │ synced_at (TIMESTAMP)    │
+│ created_at                 │        └──────────────────────────┘
+│ updated_at                 │
+└────────────────────────────┘
+
+┌──────────────────────┐        ┌──────────────────────┐
+│ sync_log             │        │ metadata             │
+│──────────────────────│        │──────────────────────│
+│ id (PK)              │        │ key (PK)             │
+│ timestamp            │        │ value                │
+│ status               │        │ updated_at           │
+│ playlists_synced     │        └──────────────────────┘
+│ playlists_created    │
+│ playlists_updated    │
+│ playlists_deleted    │
+│ duration_seconds     │
+│ details (JSON)       │
+│ auto_sync (BOOLEAN)  │
+└──────────────────────┘
 ```
 
 ### Table Definitions
 
 #### `tracks`
 
-Stores normalized track data from both platforms.
+Track matching cache - stores ISRC to platform ID mappings.
 
 ```sql
 CREATE TABLE tracks (
-    isrc TEXT PRIMARY KEY,          -- International Standard Recording Code
-    spotify_id TEXT UNIQUE,         -- Spotify track ID
-    apple_id TEXT UNIQUE,           -- Apple Music library song ID
-    apple_catalog_id TEXT,          -- Apple Music catalog ID
+    isrc TEXT PRIMARY KEY,
+    spotify_id TEXT UNIQUE,
+    deezer_id TEXT UNIQUE,
     title TEXT NOT NULL,
-    artist TEXT NOT NULL,           -- Primary artist (comma-separated for multiple)
+    artist TEXT NOT NULL,
     album TEXT NOT NULL,
     duration_ms INTEGER NOT NULL,
-    popularity INTEGER,             -- Spotify popularity score (0-100)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-    -- Indexes for fast lookup
-    INDEX idx_spotify_id (spotify_id),
-    INDEX idx_apple_id (apple_id),
-    INDEX idx_title_artist (title, artist)
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX idx_spotify_id ON tracks(spotify_id);
+CREATE INDEX idx_deezer_id ON tracks(deezer_id);
 ```
 
-**Notes:**
-- `isrc` is primary key for cross-platform matching
-- Some tracks may lack ISRC (handle gracefully)
-- `updated_at` tracks when metadata was last synced
+**Purpose:**
+- Cache track matches to avoid repeated API calls
+- Speed up subsequent syncs
+- Track ISRC → Deezer ID mappings
+
+**Example Row:**
+```python
+{
+    'isrc': 'USRC12345678',
+    'spotify_id': '4iV5W9uYEdYUVa79Axb7Rh',
+    'deezer_id': '123456789',
+    'title': 'Blinding Lights',
+    'artist': 'The Weeknd',
+    'album': 'After Hours',
+    'duration_ms': 200040,
+    'created_at': '2025-10-22 10:30:00',
+    'updated_at': '2025-10-22 10:30:00'
+}
+```
 
 ---
 
-#### `playlists`
+#### `playlist_selections`
 
-Stores playlist metadata.
+User's playlist selections - which Spotify playlists to sync to Deezer.
 
 ```sql
-CREATE TABLE playlists (
-    id TEXT PRIMARY KEY,                -- UUID generated by MusicDiff
-    spotify_id TEXT UNIQUE,             -- Spotify playlist ID
-    apple_id TEXT UNIQUE,               -- Apple Music playlist ID
+CREATE TABLE playlist_selections (
+    spotify_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    description TEXT DEFAULT '',
-    public BOOLEAN DEFAULT 0,           -- Public/Private (Spotify-specific)
-    spotify_snapshot_id TEXT,           -- Spotify snapshot for change detection
     track_count INTEGER DEFAULT 0,
+    selected BOOLEAN DEFAULT 1,
+    last_synced TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-    INDEX idx_spotify_id (spotify_id),
-    INDEX idx_apple_id (apple_id)
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
-**Notes:**
-- MusicDiff generates UUID to link playlists across platforms
-- `snapshot_id` from Spotify API used to detect changes
-- Tracks in playlist stored in `playlist_tracks` (many-to-many)
+**Purpose:**
+- Store user's playlist selection choices
+- Track when playlists were last synced
+- Persist selections across sessions
 
----
-
-#### `playlist_tracks`
-
-Junction table for playlist-track many-to-many relationship.
-
-```sql
-CREATE TABLE playlist_tracks (
-    playlist_id TEXT NOT NULL,
-    track_isrc TEXT NOT NULL,
-    position INTEGER NOT NULL,          -- Track position in playlist (0-indexed)
-    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (playlist_id, track_isrc),
-    FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE,
-    FOREIGN KEY (track_isrc) REFERENCES tracks(isrc) ON DELETE CASCADE,
-
-    INDEX idx_playlist (playlist_id),
-    INDEX idx_track (track_isrc)
-);
+**Example Rows:**
+```python
+[
+    {
+        'spotify_id': '37i9dQZF1DXcBWIGoYBM5M',
+        'name': 'Summer Vibes 2025',
+        'track_count': 45,
+        'selected': True,
+        'last_synced': '2025-10-22 13:30:45',
+        'created_at': '2025-10-20 09:15:00',
+        'updated_at': '2025-10-22 13:30:45'
+    },
+    {
+        'spotify_id': '5ABHKGoOzxkaa28ttQV9sE',
+        'name': 'Chill Evening',
+        'track_count': 28,
+        'selected': False,
+        'last_synced': None,
+        'created_at': '2025-10-20 09:15:00',
+        'updated_at': '2025-10-21 14:20:00'
+    }
+]
 ```
 
-**Notes:**
-- `position` maintains track order in playlist
-- Cascade delete ensures orphaned entries are removed
-
 ---
 
-#### `liked_songs`
+#### `synced_playlists`
 
-Stores user's liked/saved songs.
-
-```sql
-CREATE TABLE liked_songs (
-    track_isrc TEXT PRIMARY KEY,
-    spotify_liked BOOLEAN DEFAULT 0,
-    apple_liked BOOLEAN DEFAULT 0,
-    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-    FOREIGN KEY (track_isrc) REFERENCES tracks(isrc) ON DELETE CASCADE
-);
-```
-
-**Notes:**
-- Separate flags for each platform (allows tracking source)
-- Simplified compared to having separate tables per platform
-
----
-
-#### `albums`
-
-Stores saved albums.
+Mapping of Spotify playlists to their Deezer counterparts.
 
 ```sql
-CREATE TABLE albums (
-    id TEXT PRIMARY KEY,                -- UUID generated by MusicDiff
-    spotify_id TEXT UNIQUE,
-    apple_id TEXT UNIQUE,
+CREATE TABLE synced_playlists (
+    spotify_id TEXT PRIMARY KEY,
+    deezer_id TEXT NOT NULL,
     name TEXT NOT NULL,
-    artist TEXT NOT NULL,
-    release_date TEXT,
-    total_tracks INTEGER,
-    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-    INDEX idx_spotify_id (spotify_id),
-    INDEX idx_apple_id (apple_id)
+    track_count INTEGER DEFAULT 0,
+    synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (spotify_id) REFERENCES playlist_selections(spotify_id) ON DELETE CASCADE
 );
+
+CREATE INDEX idx_synced_deezer ON synced_playlists(deezer_id);
+```
+
+**Purpose:**
+- Track which Spotify playlists have been synced to Deezer
+- Store Deezer playlist IDs for updates/deletions
+- Clean up when playlists are deselected (CASCADE)
+
+**Example Row:**
+```python
+{
+    'spotify_id': '37i9dQZF1DXcBWIGoYBM5M',
+    'deezer_id': '987654321',
+    'name': 'Summer Vibes 2025',
+    'track_count': 45,
+    'synced_at': '2025-10-22 13:30:45'
+}
 ```
 
 ---
 
 #### `sync_log`
 
-Records history of sync operations.
+History of sync operations.
 
 ```sql
 CREATE TABLE sync_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    status TEXT NOT NULL,               -- 'success', 'partial', 'failed'
-    changes_applied INTEGER DEFAULT 0,
-    conflicts_count INTEGER DEFAULT 0,
+    status TEXT NOT NULL,
+    playlists_synced INTEGER DEFAULT 0,
+    playlists_created INTEGER DEFAULT 0,
+    playlists_updated INTEGER DEFAULT 0,
+    playlists_deleted INTEGER DEFAULT 0,
     duration_seconds REAL,
-    details TEXT,                       -- JSON blob with detailed changes
-    auto_sync BOOLEAN DEFAULT 0,        -- Was this a scheduled sync?
-
-    INDEX idx_timestamp (timestamp)
+    details TEXT,
+    auto_sync BOOLEAN DEFAULT 0
 );
+
+CREATE INDEX idx_sync_timestamp ON sync_log(timestamp);
 ```
 
-**Status Values:**
-- `success`: All changes applied, no conflicts
-- `partial`: Some changes applied, conflicts skipped
-- `failed`: Sync failed (API error, etc.)
+**Purpose:**
+- Track sync history
+- Monitor sync performance
+- Debug sync issues
+- Future: Analytics and trends
 
-**Details JSON Format:**
-```json
+**Status Values:**
+- `'success'`: All operations succeeded
+- `'partial'`: Some operations failed
+- `'failed'`: Sync failed completely
+
+**Example Row:**
+```python
 {
-  "playlists": {
-    "created": 2,
-    "updated": 3,
-    "deleted": 1
-  },
-  "liked_songs": {
-    "added": 45,
-    "removed": 3
-  },
-  "albums": {
-    "added": 5
-  }
+    'id': 1,
+    'timestamp': '2025-10-22 13:30:45',
+    'status': 'success',
+    'playlists_synced': 3,
+    'playlists_created': 1,
+    'playlists_updated': 2,
+    'playlists_deleted': 0,
+    'duration_seconds': 12.3,
+    'details': '{"failed": []}',
+    'auto_sync': False
 }
 ```
 
 ---
 
-#### `conflicts`
-
-Stores unresolved conflicts for later resolution.
-
-```sql
-CREATE TABLE conflicts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    type TEXT NOT NULL,                 -- 'playlist', 'liked_song', 'album'
-    entity_id TEXT NOT NULL,            -- ID of conflicting entity
-    spotify_data TEXT,                  -- JSON snapshot from Spotify
-    apple_data TEXT,                    -- JSON snapshot from Apple Music
-    local_data TEXT,                    -- JSON snapshot from local state
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    resolved_at TIMESTAMP,
-    resolution TEXT,                    -- 'spotify', 'apple', 'manual', 'skip'
-
-    INDEX idx_type (type),
-    INDEX idx_created_at (created_at),
-    INDEX idx_resolved (resolved_at)
-);
-```
-
-**Conflict Types:**
-- `playlist`: Playlist modified on both platforms
-- `liked_song`: Song liked/unliked on both platforms simultaneously
-- `track_unavailable`: Track exists on one platform but not available on other
-
----
-
 #### `metadata`
 
-Stores application metadata and settings.
+System metadata (schema version, etc.).
 
 ```sql
 CREATE TABLE metadata (
@@ -275,162 +246,249 @@ CREATE TABLE metadata (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Example rows:
--- ('schema_version', '1')
--- ('last_sync', '2025-10-22 13:45:12')
--- ('spotify_last_fetch', '2025-10-22 13:44:00')
+-- Initialize schema version
+INSERT OR IGNORE INTO metadata (key, value)
+VALUES ('schema_version', '2');
+```
+
+**Purpose:**
+- Store schema version for future migrations
+- Store system-level configuration
+- Extensible for future needs
+
+**Example Rows:**
+```python
+[
+    {'key': 'schema_version', 'value': '2', 'updated_at': '2025-10-20 08:00:00'},
+    {'key': 'last_cleanup', 'value': '2025-10-22 00:00:00', 'updated_at': '2025-10-22 00:00:00'}
+]
 ```
 
 ---
 
-## Database Class Interface
-
-### `class Database`
-
-Main database interface.
+## Class: `Database`
 
 ```python
 class Database:
-    def __init__(self, db_path: str = "~/.musicdiff/musicdiff.db")
+    def __init__(self, db_path: str = None)
     def init_schema(self) -> None
-    def close(self) -> None
-
-    # Track operations
-    def upsert_track(self, track: Track) -> None
-    def get_track_by_isrc(self, isrc: str) -> Optional[Track]
-    def get_track_by_spotify_id(self, spotify_id: str) -> Optional[Track]
-    def get_track_by_apple_id(self, apple_id: str) -> Optional[Track]
-
-    # Playlist operations
-    def upsert_playlist(self, playlist: Playlist) -> None
-    def get_playlist(self, playlist_id: str) -> Optional[Playlist]
-    def get_all_playlists(self) -> List[Playlist]
-    def delete_playlist(self, playlist_id: str) -> None
-    def set_playlist_tracks(self, playlist_id: str, track_isrcs: List[str]) -> None
-
-    # Liked songs operations
-    def set_liked_songs(self, track_isrcs: List[str], platform: str) -> None
-    def get_liked_songs(self, platform: str = None) -> List[str]
-
-    # Sync log operations
-    def add_sync_log(self, status: str, changes: int, conflicts: int, details: dict) -> None
-    def get_sync_history(self, limit: int = 10) -> List[dict]
-
-    # Conflict operations
-    def add_conflict(self, type: str, entity_id: str, spotify_data: dict, apple_data: dict) -> int
-    def get_unresolved_conflicts(self) -> List[dict]
-    def resolve_conflict(self, conflict_id: int, resolution: str) -> None
 
     # Metadata operations
     def get_metadata(self, key: str) -> Optional[str]
     def set_metadata(self, key: str, value: str) -> None
+
+    # Track operations
+    def upsert_track(self, track: Dict) -> None
+    def get_track_by_isrc(self, isrc: str) -> Optional[Dict]
+    def get_track_by_spotify_id(self, spotify_id: str) -> Optional[Dict]
+    def get_track_by_deezer_id(self, deezer_id: str) -> Optional[Dict]
+
+    # Playlist selection operations
+    def upsert_playlist_selection(self, spotify_id: str, name: str, track_count: int, selected: bool) -> None
+    def get_all_playlist_selections(self) -> List[Dict]
+    def get_selected_playlists(self) -> List[Dict]
+    def update_playlist_selection(self, spotify_id: str, selected: bool) -> None
+    def mark_playlist_synced(self, spotify_id: str) -> None
+
+    # Synced playlists operations
+    def upsert_synced_playlist(self, spotify_id: str, deezer_id: str, name: str, track_count: int) -> None
+    def get_synced_playlist(self, spotify_id: str) -> Optional[Dict]
+    def get_all_synced_playlists(self) -> List[Dict]
+    def delete_synced_playlist(self, spotify_id: str) -> None
+
+    # Sync log operations
+    def add_sync_log(self, status: str, playlists_synced: int, ...) -> None
+    def get_sync_history(self, limit: int = 10) -> List[Dict]
 ```
 
-## Key Operations
+## Usage Examples
 
-### Upserting Tracks
+### Initialize Database
 
 ```python
-def upsert_track(self, track: Track) -> None:
-    """Insert or update track data."""
-    conn = sqlite3.connect(self.db_path)
-    cursor = conn.cursor()
+from musicdiff.database import Database
 
-    cursor.execute("""
-        INSERT INTO tracks (isrc, spotify_id, apple_id, title, artist, album, duration_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(isrc) DO UPDATE SET
-            spotify_id = COALESCE(excluded.spotify_id, spotify_id),
-            apple_id = COALESCE(excluded.apple_id, apple_id),
-            title = excluded.title,
-            artist = excluded.artist,
-            album = excluded.album,
-            duration_ms = excluded.duration_ms,
-            updated_at = CURRENT_TIMESTAMP
-    """, (track.isrc, track.spotify_id, track.apple_id, track.title,
-          track.artist, track.album, track.duration_ms))
-
-    conn.commit()
-    conn.close()
+db = Database()  # Uses default path: ~/.musicdiff/musicdiff.db
+db.init_schema()
 ```
 
-**Notes:**
-- Uses `ON CONFLICT DO UPDATE` (upsert pattern)
-- `COALESCE` preserves existing IDs if new value is NULL
-
----
-
-### Setting Playlist Tracks
+### Playlist Selection Workflow
 
 ```python
-def set_playlist_tracks(self, playlist_id: str, track_isrcs: List[str]) -> None:
-    """Replace all tracks in a playlist."""
-    conn = sqlite3.connect(self.db_path)
-    cursor = conn.cursor()
+# Store user's selections
+db.upsert_playlist_selection(
+    spotify_id='abc123',
+    name='Summer Vibes',
+    track_count=45,
+    selected=True
+)
 
-    # Delete existing tracks
-    cursor.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?", (playlist_id,))
+# Get all selected playlists
+selected = db.get_selected_playlists()
+# Returns: [{'spotify_id': 'abc123', 'name': 'Summer Vibes', ...}]
 
-    # Insert new tracks with positions
-    for position, track_isrc in enumerate(track_isrcs):
-        cursor.execute("""
-            INSERT INTO playlist_tracks (playlist_id, track_isrc, position)
-            VALUES (?, ?, ?)
-        """, (playlist_id, track_isrc, position))
-
-    # Update track count
-    cursor.execute("""
-        UPDATE playlists SET track_count = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-    """, (len(track_isrcs), playlist_id))
-
-    conn.commit()
-    conn.close()
+# Update selection
+db.update_playlist_selection(spotify_id='abc123', selected=False)
 ```
 
----
-
-## Migrations
-
-Schema migrations tracked via `metadata` table.
+### Track Caching
 
 ```python
-def migrate(self) -> None:
-    """Run database migrations."""
-    current_version = int(self.get_metadata('schema_version') or 0)
+# Cache a matched track
+db.upsert_track({
+    'isrc': 'USRC12345678',
+    'spotify_id': '4iV5W9uYEdYUVa79Axb7Rh',
+    'deezer_id': '123456789',
+    'title': 'Blinding Lights',
+    'artist': 'The Weeknd',
+    'album': 'After Hours',
+    'duration_ms': 200040
+})
 
-    migrations = [
-        self._migrate_to_v1,
-        self._migrate_to_v2,
-        # Add new migrations here
-    ]
-
-    for version, migration in enumerate(migrations, start=1):
-        if version > current_version:
-            migration()
-            self.set_metadata('schema_version', str(version))
+# Lookup by ISRC (for future syncs)
+track = db.get_track_by_isrc('USRC12345678')
+if track and track['deezer_id']:
+    # Use cached Deezer ID instead of searching API
+    deezer_id = track['deezer_id']
 ```
 
-## Best Practices
-
-1. **Use Transactions**: Wrap multi-statement operations in transactions
-2. **Indexes**: Add indexes for frequently queried columns
-3. **Foreign Keys**: Enable foreign key constraints (`PRAGMA foreign_keys = ON`)
-4. **WAL Mode**: Use Write-Ahead Logging for better concurrency (`PRAGMA journal_mode=WAL`)
-5. **Backups**: Periodically backup `musicdiff.db` file
-
-## Testing
-
-Mock database for tests:
+### Sync Tracking
 
 ```python
-class MockDatabase(Database):
-    def __init__(self):
-        super().__init__(":memory:")  # In-memory DB
-        self.init_schema()
+# Track a synced playlist
+db.upsert_synced_playlist(
+    spotify_id='abc123',
+    deezer_id='987654321',
+    name='Summer Vibes',
+    track_count=45
+)
+
+# Check if playlist already synced
+synced = db.get_synced_playlist('abc123')
+if synced:
+    deezer_id = synced['deezer_id']
+    # Update existing playlist
+else:
+    # Create new playlist
+
+# Mark as synced (update timestamp)
+db.mark_playlist_synced('abc123')
 ```
 
-## References
+### Sync History
 
-- [SQLite Documentation](https://www.sqlite.org/docs.html)
-- [Python sqlite3 Module](https://docs.python.org/3/library/sqlite3.html)
+```python
+# Log a sync operation
+db.add_sync_log(
+    status='success',
+    playlists_synced=3,
+    playlists_created=1,
+    playlists_updated=2,
+    playlists_deleted=0,
+    details={'failed': []},
+    duration=12.3,
+    auto_sync=False
+)
+
+# View history
+history = db.get_sync_history(limit=10)
+for entry in history:
+    print(f"{entry['timestamp']}: {entry['status']} - {entry['playlists_synced']} synced")
+```
+
+## Design Decisions
+
+### Why SQLite?
+
+- **Embedded**: No separate database server needed
+- **Portable**: Single file, easy to backup/restore
+- **Fast**: Sufficient for local state storage
+- **ACID**: Transactions ensure data consistency
+- **Python stdlib**: No extra dependencies
+
+### Connection Management
+
+- **Per-operation connections**: Each method opens/closes its own connection
+- **No persistent connection**: Simpler, avoids lock issues
+- **Thread-safe**: Each thread gets its own connection
+- **Auto-close**: Ensures resources are freed
+
+### Cascade Deletes
+
+```sql
+FOREIGN KEY (spotify_id) REFERENCES playlist_selections(spotify_id) ON DELETE CASCADE
+```
+
+When a playlist selection is deleted, its `synced_playlists` entry is automatically removed. This keeps the database clean.
+
+### UPSERT Pattern
+
+```sql
+INSERT INTO tracks (...)
+VALUES (...)
+ON CONFLICT(isrc) DO UPDATE SET
+    deezer_id = excluded.deezer_id,
+    updated_at = CURRENT_TIMESTAMP
+```
+
+Simplifies code - no need to check if record exists before insert/update.
+
+## Performance
+
+### Indexes
+
+Strategic indexes for fast lookups:
+- `tracks.spotify_id` - Looking up cached tracks during sync
+- `tracks.deezer_id` - Reverse lookups
+- `synced_playlists.deezer_id` - Finding playlist by Deezer ID
+- `sync_log.timestamp` - Recent sync history queries
+
+### Typical Database Size
+
+- **Empty**: ~20 KB
+- **100 playlists, 5000 tracks**: ~2-3 MB
+- **1000 playlists, 50000 tracks**: ~20-30 MB
+
+SQLite handles these sizes easily with sub-millisecond query times.
+
+## Maintenance
+
+### Backup
+
+```bash
+# Backup database
+cp ~/.musicdiff/musicdiff.db ~/.musicdiff/musicdiff.db.backup
+
+# Restore from backup
+cp ~/.musicdiff/musicdiff.db.backup ~/.musicdiff/musicdiff.db
+```
+
+### Reset
+
+```bash
+# Delete database (fresh start)
+rm ~/.musicdiff/musicdiff.db
+
+# Re-initialize
+musicdiff init
+```
+
+### Inspect Database
+
+```bash
+# Open with sqlite3 CLI
+sqlite3 ~/.musicdiff/musicdiff.db
+
+# Example queries
+SELECT COUNT(*) FROM tracks;
+SELECT COUNT(*) FROM playlist_selections WHERE selected = 1;
+SELECT * FROM sync_log ORDER BY timestamp DESC LIMIT 5;
+```
+
+## Future Enhancements
+
+- **Migrations**: Schema versioning for backward compatibility
+- **Vacuum**: Periodic database compaction
+- **Analytics**: Track match success rates, sync performance trends
+- **Export/Import**: Backup playlist selections to JSON
+- **Pruning**: Auto-delete old sync logs after N days

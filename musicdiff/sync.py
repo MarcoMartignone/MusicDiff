@@ -1,197 +1,180 @@
 """
-Sync orchestration and change application.
+One-way sync orchestration: Spotify → Deezer.
 
-See docs/SYNC_LOGIC.md for detailed documentation.
+Syncs selected Spotify playlists to Deezer with full overwrite.
 """
 
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple
 from enum import Enum
 import time
-import json
-from datetime import datetime
 
-from musicdiff.diff import Change, ChangeType, DiffEngine, DiffResult, Conflict
 from musicdiff.matcher import TrackMatcher
 
 
 class SyncMode(Enum):
     """Sync modes."""
-    INTERACTIVE = "interactive"
-    AUTO = "auto"
-    DRY_RUN = "dry_run"
-    CONFLICTS_ONLY = "conflicts_only"
+    NORMAL = "normal"        # Sync selected playlists
+    DRY_RUN = "dry_run"      # Show what would be synced
+    AUTO = "auto"            # Same as NORMAL (kept for compatibility)
 
 
 @dataclass
 class SyncResult:
     """Result of a sync operation."""
     success: bool
-    changes_applied: int
-    conflicts_count: int
-    conflicts_resolved: int
-    failed_changes: List[Tuple[Change, str]]
+    playlists_created: int
+    playlists_updated: int
+    playlists_deleted: int
+    failed_operations: List[Tuple[str, str]]  # (playlist_name, error)
     duration_seconds: float
+
+    @property
+    def total_synced(self) -> int:
+        """Total playlists successfully synced."""
+        return self.playlists_created + self.playlists_updated
 
     def summary(self) -> str:
         """Return summary string."""
         if self.success:
-            return f"✓ Sync complete: {self.changes_applied} changes applied"
+            return f"✓ Sync complete: {self.total_synced} playlists synced ({self.playlists_created} created, {self.playlists_updated} updated, {self.playlists_deleted} deleted)"
         else:
-            return f"⚠ Sync partial: {self.changes_applied} applied, {len(self.failed_changes)} failed"
+            return f"⚠ Sync partial: {self.total_synced} synced, {len(self.failed_operations)} failed"
 
 
 class SyncEngine:
-    """Orchestrates the sync process."""
+    """Orchestrates one-way Spotify → Deezer sync."""
 
-    def __init__(self, spotify_client, apple_client, database, ui):
+    def __init__(self, spotify_client, deezer_client, database, ui):
         """Initialize sync engine.
 
         Args:
             spotify_client: SpotifyClient instance
-            apple_client: AppleMusicClient instance
+            deezer_client: DeezerClient instance
             database: Database instance
             ui: UI instance for user interaction
         """
         self.spotify = spotify_client
-        self.apple = apple_client
+        self.deezer = deezer_client
         self.db = database
         self.ui = ui
         self.matcher = TrackMatcher()
-        self.diff_engine = DiffEngine()
 
-    def sync(self, mode: SyncMode = SyncMode.INTERACTIVE) -> SyncResult:
-        """Perform synchronization.
+    def sync(self, mode: SyncMode = SyncMode.NORMAL) -> SyncResult:
+        """Perform one-way synchronization from Spotify to Deezer.
 
         Args:
-            mode: Sync mode (interactive, auto, dry-run, conflicts-only)
+            mode: Sync mode (normal or dry-run)
 
         Returns:
             SyncResult with operation details
         """
         start_time = time.time()
+        created = 0
+        updated = 0
+        deleted = 0
+        failed = []
 
         try:
-            if mode == SyncMode.CONFLICTS_ONLY:
-                # Only resolve existing conflicts
-                return self._sync_conflicts_only()
+            # Get selected Spotify playlists from database
+            selected = self.db.get_selected_playlists()
 
-            # Step 1: Fetch current state from platforms
-            self.ui.print_info("Fetching library data...")
-
-            spotify_state = self._fetch_spotify_state()
-            apple_state = self._fetch_apple_state()
-
-            # Step 2: Load local state
-            local_state = self._load_local_state()
-
-            # Step 3: Compute diff
-            self.ui.print_info("Computing changes...")
-            diff_result = self.diff_engine.compute_diff(
-                local_state,
-                spotify_state,
-                apple_state
-            )
-
-            # Show diff summary
-            self.ui.show_diff_summary(diff_result)
-
-            if mode == SyncMode.DRY_RUN:
-                # Don't apply anything, just show what would happen
-                self.ui.print_info("Dry run complete - no changes applied")
+            if not selected:
+                self.ui.print_warning("No playlists selected for sync. Run 'musicdiff select' first.")
                 duration = time.time() - start_time
                 return SyncResult(
                     success=True,
-                    changes_applied=0,
-                    conflicts_count=len(diff_result.conflicts),
-                    conflicts_resolved=0,
-                    failed_changes=[],
+                    playlists_created=0,
+                    playlists_updated=0,
+                    playlists_deleted=0,
+                    failed_operations=[],
                     duration_seconds=duration
                 )
 
-            # Step 4: Resolve conflicts
-            conflicts_resolved = 0
-            if diff_result.conflicts:
-                self.ui.print_warning(f"Found {len(diff_result.conflicts)} conflicts")
+            self.ui.print_info(f"Syncing {len(selected)} selected playlists to Deezer...")
 
-                if mode == SyncMode.INTERACTIVE:
-                    # Interactive conflict resolution
-                    for conflict in diff_result.conflicts:
-                        resolution = self._resolve_conflict_interactive(conflict)
-                        if resolution != 'skip':
-                            conflicts_resolved += 1
-                            # Convert resolution to change and add to auto_merge
-                            change = self._conflict_to_change(conflict, resolution)
-                            if change:
-                                diff_result.auto_merge.append(change)
-                else:
-                    # Auto mode - save conflicts for later
-                    for conflict in diff_result.conflicts:
-                        self._save_conflict(conflict)
+            # Fetch selected playlists from Spotify
+            spotify_playlist_ids = [p['spotify_id'] for p in selected]
+            spotify_playlists = self._fetch_spotify_playlists(spotify_playlist_ids)
 
-            # Step 5: Apply changes
-            applied = 0
-            failed = []
+            if mode == SyncMode.DRY_RUN:
+                # Show what would be synced
+                self._show_dry_run(spotify_playlists)
+                duration = time.time() - start_time
+                return SyncResult(
+                    success=True,
+                    playlists_created=0,
+                    playlists_updated=0,
+                    playlists_deleted=0,
+                    failed_operations=[],
+                    duration_seconds=duration
+                )
 
-            if diff_result.auto_merge:
-                self.ui.print_info(f"Applying {len(diff_result.auto_merge)} changes...")
+            # Sync each selected playlist
+            with self.ui.create_progress("Syncing playlists") as progress:
+                task = progress.add_task("Processing...", total=len(spotify_playlists))
 
-                if mode == SyncMode.INTERACTIVE:
-                    # Ask for confirmation
-                    if not self.ui.confirm("Apply these changes?", default=True):
-                        self.ui.print_warning("Sync cancelled by user")
-                        duration = time.time() - start_time
-                        return SyncResult(
-                            success=False,
-                            changes_applied=0,
-                            conflicts_count=len(diff_result.conflicts),
-                            conflicts_resolved=conflicts_resolved,
-                            failed_changes=[],
-                            duration_seconds=duration
-                        )
+                for sp_playlist in spotify_playlists:
+                    try:
+                        # Check if already synced to Deezer
+                        synced = self.db.get_synced_playlist(sp_playlist.spotify_id)
 
-                # Apply changes with progress bar
-                with self.ui.create_progress("Syncing") as progress:
-                    task = progress.add_task("Processing...", total=len(diff_result.auto_merge))
+                        if synced:
+                            # Update existing Deezer playlist (full overwrite)
+                            self._update_deezer_playlist(synced['deezer_id'], sp_playlist)
+                            updated += 1
+                        else:
+                            # Create new Deezer playlist
+                            deezer_id = self._create_deezer_playlist(sp_playlist)
+                            # Track it in database
+                            self.db.upsert_synced_playlist(
+                                spotify_id=sp_playlist.spotify_id,
+                                deezer_id=deezer_id,
+                                name=sp_playlist.name,
+                                track_count=len(sp_playlist.tracks)
+                            )
+                            created += 1
 
-                    for change in diff_result.auto_merge:
-                        try:
-                            success = self.apply_change(change)
-                            if success:
-                                applied += 1
-                            else:
-                                failed.append((change, "Application returned False"))
-                        except Exception as e:
-                            failed.append((change, str(e)))
-                            # Continue with next change
+                        # Mark as synced
+                        self.db.mark_playlist_synced(sp_playlist.spotify_id)
 
-                        progress.update(task, advance=1)
+                    except Exception as e:
+                        failed.append((sp_playlist.name, str(e)))
+                        self.ui.print_error(f"Failed to sync '{sp_playlist.name}': {e}")
 
-            # Step 6: Update local state
-            if applied > 0 or conflicts_resolved > 0:
-                self.ui.print_info("Updating local state...")
-                self._update_local_state(spotify_state, apple_state)
+                    progress.update(task, advance=1)
 
-            # Step 7: Log sync
+            # Delete deselected playlists from Deezer
+            deleted = self._delete_deselected_playlists(spotify_playlist_ids)
+
+            # Log sync
             duration = time.time() - start_time
             result = SyncResult(
                 success=len(failed) == 0,
-                changes_applied=applied,
-                conflicts_count=len(diff_result.conflicts),
-                conflicts_resolved=conflicts_resolved,
-                failed_changes=failed,
+                playlists_created=created,
+                playlists_updated=updated,
+                playlists_deleted=deleted,
+                failed_operations=failed,
                 duration_seconds=duration
             )
 
-            self._log_sync(result)
+            self.db.add_sync_log(
+                status='success' if result.success else 'partial',
+                playlists_synced=result.total_synced,
+                playlists_created=created,
+                playlists_updated=updated,
+                playlists_deleted=deleted,
+                details={'failed': [f[0] for f in failed]},
+                duration=duration
+            )
 
             # Show result
             if result.success:
                 self.ui.print_success(result.summary())
             else:
                 self.ui.print_warning(result.summary())
-                for change, error in failed:
-                    self.ui.print_error(f"  {change.entity_id}: {error}")
+                for playlist_name, error in failed:
+                    self.ui.print_error(f"  {playlist_name}: {error}")
 
             return result
 
@@ -200,584 +183,182 @@ class SyncEngine:
             self.ui.print_error(f"Sync failed: {e}")
             return SyncResult(
                 success=False,
-                changes_applied=0,
-                conflicts_count=0,
-                conflicts_resolved=0,
-                failed_changes=[],
+                playlists_created=created,
+                playlists_updated=updated,
+                playlists_deleted=deleted,
+                failed_operations=failed,
                 duration_seconds=duration
             )
 
-    def apply_change(self, change: Change) -> bool:
-        """Apply a single change.
+    def _fetch_spotify_playlists(self, playlist_ids: List[str]) -> List:
+        """Fetch Spotify playlists by ID.
 
         Args:
-            change: Change to apply
+            playlist_ids: List of Spotify playlist IDs
 
         Returns:
-            True if successful
+            List of Playlist objects with tracks
         """
-        # Route to appropriate platform
-        if change.target_platform == 'spotify':
-            return self._apply_to_spotify(change)
-        elif change.target_platform == 'apple':
-            return self._apply_to_apple(change)
-        else:
-            raise ValueError(f"Unknown target platform: {change.target_platform}")
+        playlists = []
+        all_playlists = self.spotify.fetch_playlists()
 
-    def _apply_to_spotify(self, change: Change) -> bool:
-        """Apply change to Spotify.
+        for playlist in all_playlists:
+            if playlist.spotify_id in playlist_ids:
+                playlists.append(playlist)
+
+        return playlists
+
+    def _create_deezer_playlist(self, spotify_playlist) -> str:
+        """Create new playlist on Deezer.
 
         Args:
-            change: Change to apply
+            spotify_playlist: Spotify Playlist object
 
         Returns:
-            True if successful
+            Deezer playlist ID
         """
-        if change.change_type == ChangeType.PLAYLIST_CREATED:
-            # Create playlist on Spotify
-            playlist_id = self.spotify.create_playlist(
-                name=change.data['name'],
-                description=change.data.get('description', ''),
-                public=change.data.get('public', False)
-            )
-
-            # Add tracks if any
-            if change.data.get('tracks'):
-                track_uris = []
-                for isrc in change.data['tracks']:
-                    uri = self._get_spotify_uri(isrc)
-                    if uri:
-                        track_uris.append(uri)
-
-                if track_uris:
-                    self.spotify.add_tracks_to_playlist(playlist_id, track_uris)
-
-            return True
-
-        elif change.change_type == ChangeType.PLAYLIST_UPDATED:
-            playlist_id = change.entity_id
-
-            # Add tracks
-            if change.data.get('tracks_added'):
-                track_uris = []
-                for isrc in change.data['tracks_added']:
-                    uri = self._get_spotify_uri(isrc)
-                    if uri:
-                        track_uris.append(uri)
-
-                if track_uris:
-                    self.spotify.add_tracks_to_playlist(playlist_id, track_uris)
-
-            # Remove tracks
-            if change.data.get('tracks_removed'):
-                track_uris = []
-                for isrc in change.data['tracks_removed']:
-                    uri = self._get_spotify_uri(isrc)
-                    if uri:
-                        track_uris.append(uri)
-
-                if track_uris:
-                    self.spotify.remove_tracks_from_playlist(playlist_id, track_uris)
-
-            return True
-
-        elif change.change_type == ChangeType.PLAYLIST_DELETED:
-            self.spotify.delete_playlist(change.entity_id)
-            return True
-
-        elif change.change_type == ChangeType.LIKED_SONG_ADDED:
-            track_ids = []
-            for isrc in change.data['tracks']:
-                track_id = self._get_spotify_id(isrc)
-                if track_id:
-                    track_ids.append(track_id)
-
-            if track_ids:
-                self.spotify.save_tracks(track_ids)
-            return True
-
-        elif change.change_type == ChangeType.LIKED_SONG_REMOVED:
-            track_ids = []
-            for isrc in change.data['tracks']:
-                track_id = self._get_spotify_id(isrc)
-                if track_id:
-                    track_ids.append(track_id)
-
-            if track_ids:
-                self.spotify.remove_saved_tracks(track_ids)
-            return True
-
-        elif change.change_type == ChangeType.ALBUM_ADDED:
-            album_ids = []
-            for album_isrc in change.data['albums']:
-                album_id = self._get_spotify_album_id(album_isrc)
-                if album_id:
-                    album_ids.append(album_id)
-
-            if album_ids:
-                self.spotify.save_albums(album_ids)
-            return True
-
-        elif change.change_type == ChangeType.ALBUM_REMOVED:
-            album_ids = []
-            for album_isrc in change.data['albums']:
-                album_id = self._get_spotify_album_id(album_isrc)
-                if album_id:
-                    album_ids.append(album_id)
-
-            if album_ids:
-                self.spotify.remove_saved_albums(album_ids)
-            return True
-
-        return False
-
-    def _apply_to_apple(self, change: Change) -> bool:
-        """Apply change to Apple Music.
-
-        Args:
-            change: Change to apply
-
-        Returns:
-            True if successful
-        """
-        if change.change_type == ChangeType.PLAYLIST_CREATED:
-            # Create playlist on Apple Music
-            playlist_id = self.apple.create_playlist(
-                name=change.data['name'],
-                description=change.data.get('description', '')
-            )
-
-            # Add tracks if any
-            if change.data.get('tracks'):
-                # First, ensure tracks are in library
-                catalog_ids = []
-                for isrc in change.data['tracks']:
-                    catalog_id = self._get_apple_catalog_id(isrc)
-                    if catalog_id:
-                        catalog_ids.append(catalog_id)
-
-                if catalog_ids:
-                    # Add to library first
-                    self.apple.add_to_library(catalog_ids)
-
-                    # Get library IDs (might differ from catalog IDs)
-                    library_ids = []
-                    for isrc in change.data['tracks']:
-                        lib_id = self._get_apple_library_id(isrc)
-                        if lib_id:
-                            library_ids.append(lib_id)
-
-                    # Add to playlist
-                    if library_ids:
-                        self.apple.add_tracks_to_playlist(playlist_id, library_ids)
-
-            return True
-
-        elif change.change_type == ChangeType.PLAYLIST_UPDATED:
-            playlist_id = change.entity_id
-
-            # Add tracks
-            if change.data.get('tracks_added'):
-                catalog_ids = []
-                for isrc in change.data['tracks_added']:
-                    catalog_id = self._get_apple_catalog_id(isrc)
-                    if catalog_id:
-                        catalog_ids.append(catalog_id)
-
-                if catalog_ids:
-                    self.apple.add_to_library(catalog_ids)
-
-                    library_ids = []
-                    for isrc in change.data['tracks_added']:
-                        lib_id = self._get_apple_library_id(isrc)
-                        if lib_id:
-                            library_ids.append(lib_id)
-
-                    if library_ids:
-                        self.apple.add_tracks_to_playlist(playlist_id, library_ids)
-
-            # Remove tracks
-            if change.data.get('tracks_removed'):
-                library_ids = []
-                for isrc in change.data['tracks_removed']:
-                    lib_id = self._get_apple_library_id(isrc)
-                    if lib_id:
-                        library_ids.append(lib_id)
-
-                if library_ids:
-                    self.apple.remove_tracks_from_playlist(playlist_id, library_ids)
-
-            return True
-
-        elif change.change_type == ChangeType.PLAYLIST_DELETED:
-            self.apple.delete_playlist(change.entity_id)
-            return True
-
-        elif change.change_type == ChangeType.LIKED_SONG_ADDED:
-            catalog_ids = []
-            for isrc in change.data['tracks']:
-                catalog_id = self._get_apple_catalog_id(isrc)
-                if catalog_id:
-                    catalog_ids.append(catalog_id)
-
-            if catalog_ids:
-                self.apple.add_to_library(catalog_ids)
-            return True
-
-        elif change.change_type == ChangeType.LIKED_SONG_REMOVED:
-            library_ids = []
-            for isrc in change.data['tracks']:
-                lib_id = self._get_apple_library_id(isrc)
-                if lib_id:
-                    library_ids.append(lib_id)
-
-            if library_ids:
-                self.apple.remove_from_library(library_ids)
-            return True
-
-        elif change.change_type == ChangeType.ALBUM_ADDED:
-            catalog_ids = []
-            for album_isrc in change.data['albums']:
-                catalog_id = self._get_apple_album_catalog_id(album_isrc)
-                if catalog_id:
-                    catalog_ids.append(catalog_id)
-
-            if catalog_ids:
-                self.apple.save_albums(catalog_ids)
-            return True
-
-        elif change.change_type == ChangeType.ALBUM_REMOVED:
-            library_ids = []
-            for album_isrc in change.data['albums']:
-                lib_id = self._get_apple_album_library_id(album_isrc)
-                if lib_id:
-                    library_ids.append(lib_id)
-
-            if library_ids:
-                self.apple.remove_saved_albums(library_ids)
-            return True
-
-        return False
-
-    def _fetch_spotify_state(self) -> Dict:
-        """Fetch current state from Spotify.
-
-        Returns:
-            State dictionary with playlists, liked_songs, albums
-        """
-        playlists = self.spotify.fetch_playlists()
-        liked_songs = self.spotify.fetch_liked_songs()
-        albums = self.spotify.fetch_saved_albums()
-
-        # Convert to dict format expected by diff engine
-        playlists_dict = {}
-        for playlist in playlists:
-            playlists_dict[playlist.spotify_id] = {
-                'name': playlist.name,
-                'description': playlist.description,
-                'tracks': [track.isrc for track in playlist.tracks if track.isrc]
-            }
-
-        liked_songs_list = [track.isrc for track in liked_songs if track.isrc]
-        albums_list = [album.spotify_id for album in albums]
-
-        return {
-            'playlists': playlists_dict,
-            'liked_songs': liked_songs_list,
-            'albums': albums_list
-        }
-
-    def _fetch_apple_state(self) -> Dict:
-        """Fetch current state from Apple Music.
-
-        Returns:
-            State dictionary with playlists, liked_songs, albums
-        """
-        playlists = self.apple.fetch_library_playlists()
-        liked_songs = self.apple.fetch_library_songs()
-        albums = self.apple.fetch_library_albums()
-
-        # Convert to dict format
-        playlists_dict = {}
-        for playlist in playlists:
-            playlists_dict[playlist.apple_music_id] = {
-                'name': playlist.name,
-                'description': playlist.description,
-                'tracks': [track.isrc for track in playlist.tracks if track.isrc]
-            }
-
-        liked_songs_list = [track.isrc for track in liked_songs if track.isrc]
-        albums_list = [album.apple_music_id for album in albums]
-
-        return {
-            'playlists': playlists_dict,
-            'liked_songs': liked_songs_list,
-            'albums': albums_list
-        }
-
-    def _load_local_state(self) -> Dict:
-        """Load local state from database.
-
-        Returns:
-            State dictionary
-        """
-        # Get all playlists from DB
-        playlists = self.db.get_all_playlists()
-
-        playlists_dict = {}
-        for playlist in playlists:
-            tracks = self.db.get_playlist_tracks(playlist['id'])
-            playlists_dict[playlist['id']] = {
-                'name': playlist['name'],
-                'description': playlist.get('description', ''),
-                'tracks': [track['isrc'] for track in tracks if track.get('isrc')]
-            }
-
-        # Get liked songs
-        liked_songs_spotify = self.db.get_liked_songs('spotify')
-        liked_songs_apple = self.db.get_liked_songs('apple')
-
-        # Merge (union) - any song liked on either platform
-        liked_songs_set = set()
-        for track in liked_songs_spotify:
-            if track.get('isrc'):
-                liked_songs_set.add(track['isrc'])
-        for track in liked_songs_apple:
-            if track.get('isrc'):
-                liked_songs_set.add(track['isrc'])
-
-        # Get albums
-        albums = self.db.get_all_albums()
-        albums_list = [album['spotify_id'] or album.get('apple_id', '') for album in albums]
-
-        return {
-            'playlists': playlists_dict,
-            'liked_songs': list(liked_songs_set),
-            'albums': albums_list
-        }
-
-    def _update_local_state(self, spotify_state: Dict, apple_state: Dict):
-        """Update local database with new state.
-
-        Args:
-            spotify_state: Current Spotify state
-            apple_state: Current Apple Music state
-        """
-        # Update playlists - this is simplified; production code would be more sophisticated
-        # For now, just mark that we synced
-        pass
-
-    def _resolve_conflict_interactive(self, conflict: Conflict) -> str:
-        """Resolve conflict interactively.
-
-        Args:
-            conflict: Conflict to resolve
-
-        Returns:
-            Resolution choice: 'spotify', 'apple', 'manual', 'skip'
-        """
-        self.ui.show_conflict(conflict)
-        return self.ui.prompt_resolution(conflict)
-
-    def _save_conflict(self, conflict: Conflict):
-        """Save conflict to database for later resolution.
-
-        Args:
-            conflict: Conflict to save
-        """
-        self.db.add_conflict(
-            conflict_type=conflict.entity_type,
-            entity_id=conflict.entity_id,
-            spotify_data=json.dumps(conflict.spotify_change.data),
-            apple_data=json.dumps(conflict.apple_change.data)
+        # Create playlist
+        deezer_id = self.deezer.create_playlist(
+            name=spotify_playlist.name,
+            description=spotify_playlist.description,
+            public=spotify_playlist.public
         )
 
-    def _conflict_to_change(self, conflict: Conflict, resolution: str) -> Optional[Change]:
-        """Convert conflict resolution to a change.
+        # Add tracks
+        if spotify_playlist.tracks:
+            track_ids = self._match_tracks_to_deezer(spotify_playlist.tracks)
+            if track_ids:
+                self.deezer.add_tracks_to_playlist(deezer_id, track_ids)
+
+        return deezer_id
+
+    def _update_deezer_playlist(self, deezer_id: str, spotify_playlist) -> None:
+        """Update Deezer playlist with full overwrite from Spotify.
 
         Args:
-            conflict: The conflict
-            resolution: Resolution choice ('spotify', 'apple', 'manual')
+            deezer_id: Deezer playlist ID
+            spotify_playlist: Spotify Playlist object
+        """
+        # Full overwrite: delete all tracks and re-add from Spotify
+        # First, get current tracks
+        deezer_playlist = self._fetch_deezer_playlist(deezer_id)
+
+        if deezer_playlist and deezer_playlist.tracks:
+            # Remove all current tracks
+            current_track_ids = [t.deezer_id for t in deezer_playlist.tracks if t.deezer_id]
+            if current_track_ids:
+                self.deezer.remove_tracks_from_playlist(deezer_id, current_track_ids)
+
+        # Add tracks from Spotify
+        if spotify_playlist.tracks:
+            track_ids = self._match_tracks_to_deezer(spotify_playlist.tracks)
+            if track_ids:
+                self.deezer.add_tracks_to_playlist(deezer_id, track_ids)
+
+        # Update tracking
+        self.db.upsert_synced_playlist(
+            spotify_id=spotify_playlist.spotify_id,
+            deezer_id=deezer_id,
+            name=spotify_playlist.name,
+            track_count=len(spotify_playlist.tracks)
+        )
+
+    def _fetch_deezer_playlist(self, deezer_id: str):
+        """Fetch single Deezer playlist by ID.
+
+        Args:
+            deezer_id: Deezer playlist ID
 
         Returns:
-            Change object or None
+            Playlist object or None
         """
-        if resolution == 'spotify':
-            return conflict.spotify_change
-        elif resolution == 'apple':
-            return conflict.apple_change
-        elif resolution == 'manual':
-            # Manual merge would require more UI - for now, skip
+        try:
+            all_playlists = self.deezer.fetch_library_playlists()
+            for playlist in all_playlists:
+                if playlist.deezer_id == deezer_id:
+                    return playlist
             return None
-        else:
+        except Exception:
             return None
 
-    def _sync_conflicts_only(self) -> SyncResult:
-        """Sync mode that only resolves pending conflicts.
-
-        Returns:
-            SyncResult
-        """
-        start_time = time.time()
-
-        conflicts = self.db.get_unresolved_conflicts()
-
-        if not conflicts:
-            self.ui.print_info("No unresolved conflicts")
-            duration = time.time() - start_time
-            return SyncResult(
-                success=True,
-                changes_applied=0,
-                conflicts_count=0,
-                conflicts_resolved=0,
-                failed_changes=[],
-                duration_seconds=duration
-            )
-
-        self.ui.print_info(f"Found {len(conflicts)} unresolved conflicts")
-
-        # Resolve each conflict interactively
-        resolved = 0
-        for conflict_data in conflicts:
-            # Reconstruct Conflict object from database
-            # This is simplified - production code would be more complete
-            resolved += 1
-
-        duration = time.time() - start_time
-        return SyncResult(
-            success=True,
-            changes_applied=0,
-            conflicts_count=len(conflicts),
-            conflicts_resolved=resolved,
-            failed_changes=[],
-            duration_seconds=duration
-        )
-
-    def _log_sync(self, result: SyncResult):
-        """Log sync to database.
+    def _match_tracks_to_deezer(self, spotify_tracks: List) -> List[str]:
+        """Match Spotify tracks to Deezer track IDs.
 
         Args:
-            result: SyncResult to log
-        """
-        status = 'success' if result.success else 'partial'
-
-        details = {
-            'changes_applied': result.changes_applied,
-            'conflicts_resolved': result.conflicts_resolved,
-            'failed_changes': len(result.failed_changes),
-            'duration': result.duration_seconds
-        }
-
-        self.db.add_sync_log(
-            status=status,
-            changes=result.changes_applied,
-            conflicts=result.conflicts_count,
-            details=json.dumps(details)
-        )
-
-    def _get_spotify_uri(self, isrc: str) -> Optional[str]:
-        """Get Spotify URI for a track by ISRC.
-
-        Args:
-            isrc: Track ISRC
+            spotify_tracks: List of Spotify Track objects
 
         Returns:
-            Spotify URI or None
+            List of Deezer track IDs
         """
-        # Check database first
-        track = self.db.get_track_by_isrc(isrc)
-        if track and track.get('spotify_id'):
-            return f"spotify:track:{track['spotify_id']}"
+        deezer_ids = []
 
-        # Search Spotify
-        track = self.spotify.search_track(isrc=isrc)
-        if track:
-            return track.uri
+        for sp_track in spotify_tracks:
+            if not sp_track.isrc:
+                continue
 
-        return None
+            # Try to find track on Deezer by ISRC
+            dz_track = self.deezer.search_track(isrc=sp_track.isrc)
+            if dz_track and dz_track.deezer_id:
+                deezer_ids.append(dz_track.deezer_id)
+                # Cache the match in database
+                self.db.upsert_track({
+                    'isrc': sp_track.isrc,
+                    'spotify_id': sp_track.spotify_id,
+                    'deezer_id': dz_track.deezer_id,
+                    'title': sp_track.title,
+                    'artist': sp_track.artist,
+                    'album': sp_track.album,
+                    'duration_ms': sp_track.duration_ms
+                })
 
-    def _get_spotify_id(self, isrc: str) -> Optional[str]:
-        """Get Spotify track ID by ISRC.
+        return deezer_ids
+
+    def _delete_deselected_playlists(self, selected_ids: List[str]) -> int:
+        """Delete playlists from Deezer that are no longer selected.
 
         Args:
-            isrc: Track ISRC
+            selected_ids: List of currently selected Spotify playlist IDs
 
         Returns:
-            Spotify track ID or None
+            Number of playlists deleted
         """
-        uri = self._get_spotify_uri(isrc)
-        if uri:
-            return uri.split(':')[-1]
-        return None
+        deleted = 0
+        synced = self.db.get_all_synced_playlists()
 
-    def _get_spotify_album_id(self, album_identifier: str) -> Optional[str]:
-        """Get Spotify album ID.
+        for synced_playlist in synced:
+            if synced_playlist['spotify_id'] not in selected_ids:
+                try:
+                    # Delete from Deezer
+                    self.deezer.delete_playlist(synced_playlist['deezer_id'])
+                    # Remove from tracking
+                    self.db.delete_synced_playlist(synced_playlist['spotify_id'])
+                    deleted += 1
+                    self.ui.print_info(f"Deleted deselected playlist: {synced_playlist['name']}")
+                except Exception as e:
+                    self.ui.print_error(f"Failed to delete '{synced_playlist['name']}': {e}")
+
+        return deleted
+
+    def _show_dry_run(self, spotify_playlists: List) -> None:
+        """Show what would be synced in dry-run mode.
 
         Args:
-            album_identifier: Album identifier
-
-        Returns:
-            Spotify album ID or None
+            spotify_playlists: List of Spotify playlists to be synced
         """
-        # Simplified - just return the identifier
-        return album_identifier
+        self.ui.print_info("\n[DRY RUN] The following changes would be made:\n")
 
-    def _get_apple_catalog_id(self, isrc: str) -> Optional[str]:
-        """Get Apple Music catalog ID for a track by ISRC.
+        for playlist in spotify_playlists:
+            synced = self.db.get_synced_playlist(playlist.spotify_id)
+            if synced:
+                self.ui.print_info(f"  UPDATE: {playlist.name} ({len(playlist.tracks)} tracks)")
+            else:
+                self.ui.print_info(f"  CREATE: {playlist.name} ({len(playlist.tracks)} tracks)")
 
-        Args:
-            isrc: Track ISRC
+        # Check for deletions
+        selected_ids = [p.spotify_id for p in spotify_playlists]
+        synced_playlists = self.db.get_all_synced_playlists()
+        for synced in synced_playlists:
+            if synced['spotify_id'] not in selected_ids:
+                self.ui.print_info(f"  DELETE: {synced['name']}")
 
-        Returns:
-            Apple Music catalog ID or None
-        """
-        # Check database first
-        track = self.db.get_track_by_isrc(isrc)
-        if track and track.get('apple_catalog_id'):
-            return track['apple_catalog_id']
-
-        # Search Apple Music
-        track = self.apple.search_track(isrc=isrc)
-        if track:
-            return track.catalog_id
-
-        return None
-
-    def _get_apple_library_id(self, isrc: str) -> Optional[str]:
-        """Get Apple Music library ID for a track.
-
-        Args:
-            isrc: Track ISRC
-
-        Returns:
-            Apple Music library ID or None
-        """
-        # Check database
-        track = self.db.get_track_by_isrc(isrc)
-        if track and track.get('apple_library_id'):
-            return track['apple_library_id']
-
-        # Would need to fetch from library to get library ID
-        return None
-
-    def _get_apple_album_catalog_id(self, album_identifier: str) -> Optional[str]:
-        """Get Apple Music album catalog ID.
-
-        Args:
-            album_identifier: Album identifier
-
-        Returns:
-            Album catalog ID or None
-        """
-        return album_identifier
-
-    def _get_apple_album_library_id(self, album_identifier: str) -> Optional[str]:
-        """Get Apple Music album library ID.
-
-        Args:
-            album_identifier: Album identifier
-
-        Returns:
-            Album library ID or None
-        """
-        return album_identifier
+        self.ui.print_info("\nNo changes applied (dry run mode)")

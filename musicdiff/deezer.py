@@ -1,0 +1,554 @@
+"""
+Deezer API integration.
+
+See docs/DEEZER.md for detailed documentation.
+"""
+
+from typing import List, Optional, Dict
+from dataclasses import dataclass, field
+import requests
+from requests.exceptions import RequestException
+import time
+import hashlib
+import json
+
+
+@dataclass
+class Track:
+    """Represents a music track."""
+    deezer_id: Optional[str] = None
+    isrc: Optional[str] = None
+    title: str = ""
+    artist: str = ""
+    album: str = ""
+    duration_ms: int = 0
+    artists: List[str] = field(default_factory=list)
+
+
+@dataclass
+class Playlist:
+    """Represents a playlist."""
+    deezer_id: Optional[str] = None
+    name: str = ""
+    description: str = ""
+    tracks: List[Track] = field(default_factory=list)
+    can_edit: bool = True
+    public: bool = False
+
+
+@dataclass
+class Album:
+    """Represents an album."""
+    deezer_id: Optional[str] = None
+    name: str = ""
+    artists: List[str] = field(default_factory=list)
+    release_date: str = ""
+    total_tracks: int = 0
+
+
+class DeezerClient:
+    """Client for interacting with Deezer API."""
+
+    BASE_URL = "https://api.deezer.com"
+    PRIVATE_API_URL = "https://www.deezer.com/ajax/gw-light.php"
+
+    def __init__(self, arl_token: str = None):
+        """Initialize Deezer client.
+
+        Args:
+            arl_token: Deezer ARL authentication token
+        """
+        self.arl_token = arl_token
+        self.session = requests.Session()
+        self.user_id = None
+
+        if arl_token:
+            self.session.cookies.set('arl', arl_token, domain='.deezer.com')
+
+    def authenticate(self) -> bool:
+        """Authenticate with Deezer using ARL token.
+
+        Returns:
+            True if authentication successful
+        """
+        if not self.arl_token:
+            raise RuntimeError("ARL token not set")
+
+        try:
+            # Use private API to get user info with ARL cookie
+            url = f"{self.PRIVATE_API_URL}"
+            params = {
+                'method': 'deezer.getUserData',
+                'api_version': '1.0',
+                'api_token': 'null'
+            }
+
+            response = self._api_call_with_retry('GET', url, params=params)
+
+            if response.status_code == 200:
+                data = response.json()
+                if 'results' in data and 'USER' in data['results']:
+                    self.user_id = str(data['results']['USER']['USER_ID'])
+                    return True
+                elif 'error' in data:
+                    # ARL might be invalid
+                    return False
+
+            return False
+        except Exception as e:
+            return False
+
+    def fetch_library_playlists(self) -> List[Playlist]:
+        """Fetch all playlists from user's library.
+
+        Returns:
+            List of Playlist objects
+        """
+        if not self.user_id:
+            raise RuntimeError("Not authenticated. Call authenticate() first.")
+
+        playlists = []
+        url = f"{self.BASE_URL}/user/{self.user_id}/playlists"
+        params = {'limit': 100}
+
+        while url:
+            response = self._api_call_with_retry('GET', url, params=params)
+            data = response.json()
+
+            for item in data.get('data', []):
+                # Parse playlist metadata
+                playlist = self._parse_playlist(item)
+
+                # Fetch full track data for playlist
+                tracks = self._fetch_playlist_tracks(item['id'])
+                playlist.tracks = tracks
+
+                playlists.append(playlist)
+
+            # Handle pagination
+            url = data.get('next')
+            params = None  # Next URL includes params
+
+        return playlists
+
+    def fetch_library_songs(self) -> List[Track]:
+        """Fetch all favorite/liked tracks from user's library.
+
+        Returns:
+            List of Track objects
+        """
+        if not self.user_id:
+            raise RuntimeError("Not authenticated. Call authenticate() first.")
+
+        tracks = []
+        url = f"{self.BASE_URL}/user/{self.user_id}/tracks"
+        params = {'limit': 100}
+
+        while url:
+            response = self._api_call_with_retry('GET', url, params=params)
+            data = response.json()
+
+            for item in data.get('data', []):
+                track = self._parse_track(item)
+                tracks.append(track)
+
+            url = data.get('next')
+            params = None
+
+        return tracks
+
+    def fetch_library_albums(self) -> List[Album]:
+        """Fetch all albums from user's library.
+
+        Returns:
+            List of Album objects
+        """
+        if not self.user_id:
+            raise RuntimeError("Not authenticated. Call authenticate() first.")
+
+        albums = []
+        url = f"{self.BASE_URL}/user/{self.user_id}/albums"
+        params = {'limit': 100}
+
+        while url:
+            response = self._api_call_with_retry('GET', url, params=params)
+            data = response.json()
+
+            for item in data.get('data', []):
+                album = self._parse_album(item)
+                albums.append(album)
+
+            url = data.get('next')
+            params = None
+
+        return albums
+
+    def create_playlist(self, name: str, description: str = "", public: bool = False) -> str:
+        """Create a new playlist in user's library.
+
+        Args:
+            name: Playlist name
+            description: Optional description
+            public: Whether playlist is public
+
+        Returns:
+            Deezer playlist ID
+        """
+        if not self.user_id:
+            raise RuntimeError("Not authenticated. Call authenticate() first.")
+
+        url = f"{self.BASE_URL}/user/{self.user_id}/playlists"
+        params = {
+            'title': name,
+            'access_token': self._get_access_token()
+        }
+
+        if description:
+            params['description'] = description
+        if public:
+            params['public'] = 'true'
+
+        response = self._api_call_with_retry('POST', url, params=params)
+        data = response.json()
+
+        return str(data.get('id'))
+
+    def add_tracks_to_playlist(self, playlist_id: str, track_ids: List[str]) -> bool:
+        """Add tracks to a playlist.
+
+        Args:
+            playlist_id: Deezer playlist ID
+            track_ids: List of Deezer track IDs
+
+        Returns:
+            True on success
+        """
+        if not self.user_id:
+            raise RuntimeError("Not authenticated. Call authenticate() first.")
+
+        # Deezer API accepts comma-separated track IDs
+        tracks_str = ','.join(track_ids)
+
+        url = f"{self.BASE_URL}/playlist/{playlist_id}/tracks"
+        params = {
+            'songs': tracks_str,
+            'access_token': self._get_access_token()
+        }
+
+        response = self._api_call_with_retry('POST', url, params=params)
+        return response.status_code == 200
+
+    def remove_tracks_from_playlist(self, playlist_id: str, track_ids: List[str]) -> bool:
+        """Remove tracks from a playlist.
+
+        Args:
+            playlist_id: Deezer playlist ID
+            track_ids: List of Deezer track IDs to remove
+
+        Returns:
+            True on success
+        """
+        if not self.user_id:
+            raise RuntimeError("Not authenticated. Call authenticate() first.")
+
+        tracks_str = ','.join(track_ids)
+
+        url = f"{self.BASE_URL}/playlist/{playlist_id}/tracks"
+        params = {
+            'songs': tracks_str,
+            'access_token': self._get_access_token()
+        }
+
+        response = self._api_call_with_retry('DELETE', url, params=params)
+        return response.status_code == 200
+
+    def delete_playlist(self, playlist_id: str) -> bool:
+        """Delete a playlist from user's library.
+
+        Args:
+            playlist_id: Deezer playlist ID
+
+        Returns:
+            True on success
+        """
+        if not self.user_id:
+            raise RuntimeError("Not authenticated. Call authenticate() first.")
+
+        url = f"{self.BASE_URL}/playlist/{playlist_id}"
+        params = {'access_token': self._get_access_token()}
+
+        response = self._api_call_with_retry('DELETE', url, params=params)
+        return response.status_code == 200
+
+    def add_to_library(self, track_ids: List[str]) -> bool:
+        """Add tracks to user's favorites/library.
+
+        Args:
+            track_ids: List of Deezer track IDs
+
+        Returns:
+            True on success
+        """
+        if not self.user_id:
+            raise RuntimeError("Not authenticated. Call authenticate() first.")
+
+        # Add tracks one by one (Deezer API limitation)
+        for track_id in track_ids:
+            url = f"{self.BASE_URL}/user/{self.user_id}/tracks"
+            params = {
+                'track_id': track_id,
+                'access_token': self._get_access_token()
+            }
+
+            self._api_call_with_retry('POST', url, params=params)
+
+        return True
+
+    def remove_from_library(self, track_ids: List[str]) -> bool:
+        """Remove tracks from user's favorites/library.
+
+        Args:
+            track_ids: List of Deezer track IDs
+
+        Returns:
+            True on success
+        """
+        if not self.user_id:
+            raise RuntimeError("Not authenticated. Call authenticate() first.")
+
+        for track_id in track_ids:
+            url = f"{self.BASE_URL}/user/{self.user_id}/tracks"
+            params = {
+                'track_id': track_id,
+                'access_token': self._get_access_token()
+            }
+
+            self._api_call_with_retry('DELETE', url, params=params)
+
+        return True
+
+    def save_albums(self, album_ids: List[str]) -> bool:
+        """Add albums to user's library.
+
+        Args:
+            album_ids: List of Deezer album IDs
+
+        Returns:
+            True on success
+        """
+        if not self.user_id:
+            raise RuntimeError("Not authenticated. Call authenticate() first.")
+
+        for album_id in album_ids:
+            url = f"{self.BASE_URL}/user/{self.user_id}/albums"
+            params = {
+                'album_id': album_id,
+                'access_token': self._get_access_token()
+            }
+
+            self._api_call_with_retry('POST', url, params=params)
+
+        return True
+
+    def remove_saved_albums(self, album_ids: List[str]) -> bool:
+        """Remove albums from user's library.
+
+        Args:
+            album_ids: List of Deezer album IDs
+
+        Returns:
+            True on success
+        """
+        if not self.user_id:
+            raise RuntimeError("Not authenticated. Call authenticate() first.")
+
+        for album_id in album_ids:
+            url = f"{self.BASE_URL}/user/{self.user_id}/albums"
+            params = {
+                'album_id': album_id,
+                'access_token': self._get_access_token()
+            }
+
+            self._api_call_with_retry('DELETE', url, params=params)
+
+        return True
+
+    def search_track(self, isrc: str = None, query: str = None) -> Optional[Track]:
+        """Search for a track by ISRC or metadata.
+
+        Args:
+            isrc: International Standard Recording Code (most reliable)
+            query: Fallback search query
+
+        Returns:
+            Track object or None if not found
+        """
+        # Prefer ISRC search (most accurate)
+        if isrc:
+            url = f"{self.BASE_URL}/track/isrc:{isrc}"
+
+            try:
+                response = self._api_call_with_retry('GET', url)
+                data = response.json()
+                if data and 'id' in data:
+                    return self._parse_track(data)
+            except Exception:
+                pass
+
+        # Fallback to text search
+        if query:
+            url = f"{self.BASE_URL}/search/track"
+            params = {
+                'q': query,
+                'limit': 5
+            }
+
+            try:
+                response = self._api_call_with_retry('GET', url, params=params)
+                data = response.json()
+                results = data.get('data', [])
+                if results:
+                    return self._parse_track(results[0])
+            except Exception:
+                pass
+
+        return None
+
+    def _fetch_playlist_tracks(self, playlist_id: str) -> List[Track]:
+        """Fetch all tracks for a specific playlist.
+
+        Args:
+            playlist_id: Deezer playlist ID
+
+        Returns:
+            List of Track objects
+        """
+        tracks = []
+        url = f"{self.BASE_URL}/playlist/{playlist_id}/tracks"
+        params = {'limit': 100}
+
+        while url:
+            response = self._api_call_with_retry('GET', url, params=params)
+            data = response.json()
+
+            for item in data.get('data', []):
+                track = self._parse_track(item)
+                tracks.append(track)
+
+            url = data.get('next')
+            params = None
+
+        return tracks
+
+    def _parse_track(self, track_data: dict) -> Track:
+        """Parse Deezer track data into Track object.
+
+        Args:
+            track_data: Raw track data from Deezer API
+
+        Returns:
+            Track object
+        """
+        artist_name = track_data.get('artist', {}).get('name', '')
+        artists = [artist_name] if artist_name else []
+
+        return Track(
+            deezer_id=str(track_data.get('id', '')),
+            isrc=track_data.get('isrc'),
+            title=track_data.get('title', ''),
+            artist=artist_name,
+            artists=artists,
+            album=track_data.get('album', {}).get('title', ''),
+            duration_ms=track_data.get('duration', 0) * 1000,  # Deezer uses seconds
+        )
+
+    def _parse_playlist(self, playlist_data: dict) -> Playlist:
+        """Parse Deezer playlist data into Playlist object.
+
+        Args:
+            playlist_data: Raw playlist data
+
+        Returns:
+            Playlist object
+        """
+        return Playlist(
+            deezer_id=str(playlist_data.get('id', '')),
+            name=playlist_data.get('title', ''),
+            description=playlist_data.get('description', ''),
+            tracks=[],  # Will be populated separately
+            can_edit=not playlist_data.get('is_loved_track', False),
+            public=playlist_data.get('public', False),
+        )
+
+    def _parse_album(self, album_data: dict) -> Album:
+        """Parse Deezer album data into Album object.
+
+        Args:
+            album_data: Raw album data
+
+        Returns:
+            Album object
+        """
+        artist_name = album_data.get('artist', {}).get('name', '')
+        artists = [artist_name] if artist_name else []
+
+        return Album(
+            deezer_id=str(album_data.get('id', '')),
+            name=album_data.get('title', ''),
+            artists=artists,
+            release_date=album_data.get('release_date', ''),
+            total_tracks=album_data.get('nb_tracks', 0),
+        )
+
+    def _get_access_token(self) -> str:
+        """Get access token for API requests.
+
+        For ARL-based authentication, this returns the ARL token.
+        In a full implementation, this would convert ARL to access token.
+
+        Returns:
+            Access token string
+        """
+        # Simplified: In a production implementation, you would exchange
+        # the ARL token for an access token via Deezer's private API
+        return self.arl_token or ""
+
+    def _api_call_with_retry(self, method: str, url: str, max_retries: int = 3, **kwargs) -> requests.Response:
+        """Make API call with exponential backoff retry.
+
+        Args:
+            method: HTTP method (GET, POST, DELETE, etc.)
+            url: Request URL
+            max_retries: Maximum number of retries
+            **kwargs: Additional arguments for requests.request()
+
+        Returns:
+            Response object
+
+        Raises:
+            Exception: If max retries exceeded
+        """
+        for attempt in range(max_retries):
+            try:
+                response = self.session.request(method, url, **kwargs)
+
+                if response.status_code == 429:
+                    # Rate limited, wait and retry
+                    retry_after = int(response.headers.get('Retry-After', 2 ** attempt))
+                    time.sleep(retry_after)
+                    continue
+
+                if response.status_code >= 500:
+                    # Server error, retry with backoff
+                    time.sleep(2 ** attempt)
+                    continue
+
+                response.raise_for_status()
+                return response
+
+            except RequestException as e:
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(2 ** attempt)
+
+        raise Exception(f"Max retries exceeded for {method} {url}")

@@ -1,17 +1,17 @@
 # MusicDiff
 
-> Git-like bidirectional sync for your Spotify and Apple Music libraries
+> Simple one-way playlist transfer from Spotify to Deezer
 
-MusicDiff keeps your music libraries in sync across Spotify and Apple Music with a familiar git-like workflow. Review changes with a diff interface, resolve conflicts interactively, and schedule automatic syncs.
+MusicDiff keeps your Spotify playlists synced to Deezer. Select which playlists you want to mirror, and MusicDiff will automatically create and update them on Deezer to match your Spotify playlists exactly.
 
 ## Features
 
-- **Bidirectional Sync**: Changes on either platform sync to the other
-- **Git-like Workflow**: Commands like `init`, `status`, `sync`, `diff`, `log`
-- **Interactive Conflict Resolution**: Terminal-based diff UI for manual conflict resolution
-- **Automatic Syncing**: Daemon mode for scheduled background syncs
-- **Comprehensive Sync**: Playlists, liked songs, and saved albums
-- **Smart Track Matching**: ISRC-based matching with fuzzy fallback
+- **One-Way Sync**: Spotify → Deezer playlist transfer
+- **Playlist Selection**: Choose which Spotify playlists to sync
+- **Automatic Updates**: Keep Deezer playlists in sync with Spotify changes
+- **Full Overwrite**: Deezer playlists mirror Spotify playlists exactly
+- **Smart Track Matching**: ISRC-based track matching across platforms
+- **Clean Deselection**: Remove playlists from Deezer when deselected
 - **Sync History**: Track all syncs and changes over time
 
 ## Quick Start
@@ -25,7 +25,7 @@ musicdiff setup
 
 This **interactive wizard** will:
 1. ✅ Guide you step-by-step through creating Spotify API credentials
-2. ✅ Optionally set up Apple Music (requires Apple Developer account)
+2. ✅ Set up Deezer authentication (requires ARL token from browser)
 3. ✅ Test your credentials automatically
 4. ✅ Save everything to `.env` file
 5. ✅ Get you ready to sync in 5 minutes!
@@ -41,87 +41,103 @@ source ~/Documents/MusicDiff/.musicdiff/.env
 # Initialize database
 musicdiff init
 
+# Select playlists to sync
+musicdiff select
+
 # Start syncing!
 musicdiff sync
 ```
 
-### Usage
+## Usage
 
-**See pending changes:**
+### Select Playlists
+
 ```bash
-musicdiff diff
+# Interactive checkbox selection
+musicdiff select
 ```
 
-**Sync your libraries:**
+Choose which Spotify playlists to sync to Deezer. Use arrow keys to navigate, SPACE to select/deselect, and ENTER to confirm.
+
+### View Your Playlists
+
 ```bash
-# Interactive mode (review each change)
+# Show all playlists with sync status
+musicdiff list
+```
+
+See which playlists are selected for sync and when they were last synced.
+
+### Sync to Deezer
+
+```bash
+# Perform sync
 musicdiff sync
 
-# Auto mode (apply non-conflicting changes automatically)
-musicdiff sync --auto
-
-# Dry run (see what would be synced)
+# Dry run (preview what would be synced)
 musicdiff sync --dry-run
 ```
 
-**View sync history:**
+**What happens during sync:**
+- Selected playlists are created on Deezer (if they don't exist)
+- Existing Deezer playlists are updated to match Spotify exactly (full overwrite)
+- Deselected playlists are deleted from Deezer
+- All tracks are matched using ISRC codes
+
+### View Status
+
 ```bash
+# See sync status
+musicdiff status
+
+# View sync history
 musicdiff log
-```
-
-**Resolve pending conflicts:**
-```bash
-musicdiff resolve
-```
-
-**Run as daemon (automatic syncs):**
-```bash
-# Start daemon (syncs every 24 hours)
-musicdiff daemon
-
-# Custom interval (6 hours)
-musicdiff daemon --interval 21600
-
-# Stop daemon
-musicdiff daemon --stop
 ```
 
 ## How It Works
 
-MusicDiff uses a **3-way merge algorithm** similar to Git:
+MusicDiff performs a simple one-way sync from Spotify to Deezer:
 
 ```
-     Local State (Database)
-          /        \
-         /          \
-    Spotify      Apple Music
+1. Fetch selected playlists from Spotify
+2. For each selected playlist:
+   - If playlist exists on Deezer: Update it (full overwrite)
+   - If playlist doesn't exist: Create it
+3. Delete deselected playlists from Deezer
+4. Update local database
 ```
 
-1. **Fetch** current state from both platforms
-2. **Diff** against local state to detect changes
-3. **Categorize** changes as auto-merge or conflicts
-4. **Resolve** conflicts interactively (if any)
-5. **Apply** changes via platform APIs
-6. **Update** local state
+**Track Matching:**
+- Uses ISRC (International Standard Recording Code) for accurate matching
+- Searches Deezer for matching track by ISRC
+- Skips tracks without ISRC codes
 
 ## Configuration
 
 ### Easy Setup (Recommended)
 
-Just run `./setup` and follow the wizard! It handles everything automatically.
+Just run `musicdiff setup` and follow the wizard! It handles everything automatically.
 
 ### Manual Setup
 
-If you prefer to set up manually, see `SETUP.md` for detailed instructions.
+If you prefer to set up manually:
 
 **Required:**
 - Spotify Client ID & Secret (free, 5 minutes)
-- Redirect URI: `https://localhost:8888/callback`
+  - Create app at https://developer.spotify.com/dashboard
+  - Set redirect URI to: `http://127.0.0.1:8888/callback`
+- Deezer ARL token (free with Deezer account)
+  - Login to deezer.com in browser
+  - Open Developer Tools → Application → Cookies
+  - Copy value of `arl` cookie
 
-**Optional:**
-- Apple Music credentials (requires $99/year Apple Developer account)
-
-All credentials go in a `.env` file in the project directory.
+Create `.musicdiff/.env` file:
+```bash
+export SPOTIFY_CLIENT_ID="your_client_id"
+export SPOTIFY_CLIENT_SECRET="your_client_secret"
+export SPOTIFY_REDIRECT_URI="http://127.0.0.1:8888/callback"
+export DEEZER_ARL="your_arl_token"
+```
 
 ## Architecture
 
@@ -129,9 +145,8 @@ All credentials go in a `.env` file in the project directory.
 musicdiff/
 ├── cli.py          # Command-line interface
 ├── spotify.py      # Spotify API client
-├── apple.py        # Apple Music API client
+├── deezer.py       # Deezer API client
 ├── database.py     # SQLite state management
-├── diff.py         # 3-way diff algorithm
 ├── sync.py         # Sync orchestration
 ├── matcher.py      # Cross-platform track matching
 ├── ui.py           # Terminal UI components
@@ -147,9 +162,8 @@ Comprehensive documentation available in the `docs/` directory:
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) - System design and data flow
 - [CLI.md](docs/CLI.md) - Command-line interface reference
 - [SPOTIFY.md](docs/SPOTIFY.md) - Spotify API integration
-- [APPLE_MUSIC.md](docs/APPLE_MUSIC.md) - Apple Music API integration
+- [DEEZER.md](docs/DEEZER.md) - Deezer API integration
 - [DATABASE.md](docs/DATABASE.md) - Database schema and operations
-- [DIFF_ALGORITHM.md](docs/DIFF_ALGORITHM.md) - 3-way merge algorithm
 - [SYNC_LOGIC.md](docs/SYNC_LOGIC.md) - Sync orchestration
 - [TRACK_MATCHING.md](docs/TRACK_MATCHING.md) - Cross-platform track matching
 - [UI_COMPONENTS.md](docs/UI_COMPONENTS.md) - Terminal UI components
@@ -192,22 +206,23 @@ MusicDiff/
 ## Roadmap
 
 - [x] Basic Spotify integration
-- [x] Apple Music integration
-- [x] 3-way diff algorithm
-- [x] Interactive conflict resolution
-- [x] Daemon mode
+- [x] Deezer integration
+- [x] One-way playlist sync
+- [x] Interactive playlist selection
+- [ ] Daemon mode for automatic syncs
 - [ ] Web UI for visualization
-- [ ] Support for YouTube Music
-- [ ] Playlist versioning (git-like branches)
+- [ ] Support for liked songs sync
+- [ ] Support for albums sync
 - [ ] Export/import to portable format
-- [ ] ML-based conflict resolution suggestions
 
 ## Known Limitations
 
-1. **Apple Music API**: Requires Apple Developer account ($99/year)
-2. **Track Matching**: Not all tracks have ISRC codes; fallback matching may not be 100% accurate
-3. **Rate Limits**: API rate limits may slow down large library syncs
-4. **Regional Availability**: Tracks may not be available in all regions on all platforms
+1. **Playlists Only**: Currently only syncs playlists (not liked songs or albums)
+2. **One-Way Sync**: Changes on Deezer are not synced back to Spotify
+3. **Deezer ARL Token**: May expire and require periodic re-extraction from browser
+4. **Track Matching**: Not all tracks have ISRC codes; tracks without ISRC are skipped
+5. **Rate Limits**: API rate limits may slow down large library syncs
+6. **Regional Availability**: Tracks may not be available in all regions on all platforms
 
 ## Contributing
 
@@ -225,8 +240,8 @@ MIT License - see LICENSE file for details
 
 ## Acknowledgments
 
-- Inspired by Git's 3-way merge algorithm
 - Built with [spotipy](https://spotipy.readthedocs.io/) for Spotify API
+- Deezer integration using private API
 - Terminal UI powered by [rich](https://rich.readthedocs.io/)
 
 ## Support

@@ -19,7 +19,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 # Import all modules
 from musicdiff.database import Database
 from musicdiff.spotify import SpotifyClient
-from musicdiff.apple import AppleMusicClient
+from musicdiff.deezer import DeezerClient
 from musicdiff.sync import SyncEngine, SyncMode
 from musicdiff.scheduler import SyncDaemon
 from musicdiff.ui import UI
@@ -65,41 +65,23 @@ def get_spotify_client() -> SpotifyClient:
     return client
 
 
-def get_apple_client() -> AppleMusicClient:
-    """Get authenticated Apple Music client."""
+def get_deezer_client() -> DeezerClient:
+    """Get authenticated Deezer client."""
     # Get credentials from environment
-    team_id = os.environ.get('APPLE_TEAM_ID')
-    key_id = os.environ.get('APPLE_KEY_ID')
-    private_key_path = os.environ.get('APPLE_PRIVATE_KEY_PATH')
-    user_token = os.environ.get('APPLE_USER_TOKEN')
+    arl_token = os.environ.get('DEEZER_ARL')
 
-    if not all([team_id, key_id, private_key_path]):
-        console.print("[red]Error: Apple Music credentials not found.[/red]")
-        console.print("Set APPLE_TEAM_ID, APPLE_KEY_ID, and APPLE_PRIVATE_KEY_PATH")
+    if not arl_token:
+        console.print("[red]Error: Deezer credentials not found.[/red]")
+        console.print("Set DEEZER_ARL environment variable")
         console.print("Or run 'musicdiff init' to configure")
         sys.exit(1)
 
-    # Generate developer token
-    try:
-        dev_token = AppleMusicClient.generate_developer_token(
-            team_id=team_id,
-            key_id=key_id,
-            private_key_path=private_key_path
-        )
-    except Exception as e:
-        console.print(f"[red]Error generating Apple Music developer token: {e}[/red]")
+    client = DeezerClient(arl_token=arl_token)
+
+    # Authenticate
+    if not client.authenticate():
+        console.print("[red]Error: Deezer authentication failed[/red]")
         sys.exit(1)
-
-    client = AppleMusicClient(developer_token=dev_token)
-
-    # Set user token if available
-    if user_token:
-        if not client.authenticate_user(user_token):
-            console.print("[red]Error: Apple Music user token invalid[/red]")
-            sys.exit(1)
-    else:
-        console.print("[yellow]Warning: No Apple Music user token set.[/yellow]")
-        console.print("Set APPLE_USER_TOKEN environment variable")
 
     return client
 
@@ -108,10 +90,10 @@ def get_sync_engine() -> SyncEngine:
     """Get initialized sync engine."""
     db = get_database()
     spotify = get_spotify_client()
-    apple = get_apple_client()
+    deezer = get_deezer_client()
     ui = UI()
 
-    return SyncEngine(spotify, apple, db, ui)
+    return SyncEngine(spotify, deezer, db, ui)
 
 
 @click.group()
@@ -119,10 +101,10 @@ def get_sync_engine() -> SyncEngine:
 @click.option('--verbose', '-v', is_flag=True, help='Enable verbose output')
 @click.pass_context
 def cli(ctx, verbose):
-    """MusicDiff - Git-like sync for your music libraries.
+    """MusicDiff - Transfer your Spotify playlists to Deezer.
 
-    Bidirectionally sync playlists, liked songs, and albums between
-    Spotify and Apple Music with interactive conflict resolution.
+    Simple one-way sync: Select your Spotify playlists and MusicDiff
+    will create/update them on Deezer to match exactly.
     """
     ctx.ensure_object(dict)
     ctx.obj['verbose'] = verbose
@@ -134,7 +116,7 @@ def setup():
 
     This wizard guides you through:
     - Creating Spotify API credentials (free, 5 minutes)
-    - Optionally setting up Apple Music (requires Apple Developer account)
+    - Optionally setting up Deezer (free with Deezer account)
     - Testing your credentials
     - Saving everything automatically
     """
@@ -147,7 +129,7 @@ def setup():
     console.print(Panel.fit(
         "[bold cyan]🎵 MusicDiff Setup Wizard[/bold cyan]\n\n"
         "This wizard will help you set up MusicDiff to sync your\n"
-        "music libraries between Spotify and Apple Music.\n\n"
+        "music libraries between Spotify and Deezer.\n\n"
         "[dim]Press Enter to continue...[/dim]",
         border_style="cyan"
     ))
@@ -160,11 +142,11 @@ def setup():
     console.print("[bold]Which music platforms do you use?[/bold]")
     console.print()
     console.print("1. [green]Spotify only[/green] (easiest, free)")
-    console.print("2. [cyan]Spotify + Apple Music[/cyan] (requires Apple Developer account)")
+    console.print("2. [cyan]Spotify + Deezer[/cyan] (free with Deezer account)")
     console.print()
 
     choice = Prompt.ask("Choose option", choices=["1", "2"], default="1")
-    setup_apple_music = choice == "2"
+    setup_deezer = choice == "2"
 
     # Spotify Setup - Step 1
     clear_screen()
@@ -268,137 +250,100 @@ def setup():
             console.print("[yellow]Setup cancelled.[/yellow]")
             return
 
-    # Apple Music Setup
-    apple_team_id = None
-    apple_key_id = None
-    apple_key_path = None
-    apple_user_token = None
+    # Deezer Setup
+    deezer_arl = None
 
-    if setup_apple_music:
+    if setup_deezer:
         clear_screen()
         console.print()
         console.print(Panel.fit(
-            "[bold red]📕 Apple Music Setup[/bold red]\n\n"
-            "[yellow]⚠️  Requirements:[/yellow]\n"
-            "• Apple Developer Account ($99/year)\n"
-            "• 10-15 minutes for setup\n\n"
-            "If you don't have an Apple Developer account,\n"
-            "you can skip this and only use Spotify.",
-            border_style="red"
+            "[bold magenta]🎵 Deezer Setup[/bold magenta]\n\n"
+            "[yellow]Requirements:[/yellow]\n"
+            "• Free Deezer account\n"
+            "• 2-3 minutes for setup\n\n"
+            "You'll need to extract your ARL token from Deezer.",
+            border_style="magenta"
         ))
         console.print()
 
-        if Confirm.ask("Do you have an Apple Developer account?", default=False):
-            # Step 1: Create MusicKit ID
+        if Confirm.ask("Do you have a Deezer account?", default=True):
+            # Step 1: Get ARL Token
             clear_screen()
             console.print()
             console.print(Panel.fit(
-                "[bold red]📕 Apple Music - Step 1 of 4[/bold red]\n\n"
-                "Create a MusicKit Identifier",
-                border_style="red"
+                "[bold magenta]🎵 Deezer - Get Your ARL Token[/bold magenta]\n\n"
+                "The ARL token is your authentication credential",
+                border_style="magenta"
             ))
             console.print()
 
-            if Confirm.ask("Open Apple Developer portal?", default=True):
-                webbrowser.open("https://developer.apple.com/account/resources/identifiers/list/musicId")
-                time.sleep(2)
-
+            console.print("[bold]Method 1: Using Browser DevTools (Recommended)[/bold]")
             console.print()
-            console.print("1. Click the [cyan bold]'+'[/cyan bold] button")
-            console.print("2. Select [cyan bold]'MusicKit Identifier'[/cyan bold]")
-            console.print("3. Enter description: [cyan bold]MusicDiff[/cyan bold]")
-            console.print("4. Click [cyan bold]'Continue'[/cyan bold] → [cyan bold]'Register'[/cyan bold]")
-            console.print()
-            console.print("[dim]Press Enter when done...[/dim]")
-            input()
-
-            # Step 2: Create Private Key
-            clear_screen()
-            console.print()
-            console.print(Panel.fit(
-                "[bold red]📕 Apple Music - Step 2 of 4[/bold red]\n\n"
-                "Create a Private Key for MusicKit",
-                border_style="red"
-            ))
-            console.print()
-
-            if Confirm.ask("Open Auth Keys page?", default=True):
-                webbrowser.open("https://developer.apple.com/account/resources/authkeys/list")
-                time.sleep(2)
-
-            console.print()
-            console.print("1. Click the [cyan bold]'+'[/cyan bold] button")
-            console.print("2. Name: [cyan bold]MusicDiff Key[/cyan bold]")
-            console.print("3. Check [cyan bold]'MusicKit'[/cyan bold]")
-            console.print("4. Click [cyan bold]'Continue'[/cyan bold] → [cyan bold]'Register'[/cyan bold]")
-            console.print("5. [bold red]Download the .p8 file[/bold red] (you can only download once!)")
-            console.print()
-            console.print("[dim]Press Enter after downloading the .p8 file...[/dim]")
-            input()
-
-            # Step 3: Collect credentials
-            clear_screen()
-            console.print()
-            console.print(Panel.fit(
-                "[bold red]📕 Apple Music - Step 3 of 4[/bold red]\n\n"
-                "Enter your Apple Music credentials",
-                border_style="red"
-            ))
-            console.print()
-
-            console.print("After downloading, you should see a [bold]Key ID[/bold] (10 characters)")
-            apple_key_id = Prompt.ask("Enter your Apple Music Key ID")
-
-            console.print()
-            console.print("Find your [bold]Team ID[/bold]:")
-            console.print("  • Go to https://developer.apple.com/account")
-            console.print("  • Look in the membership section (10 characters)")
-            apple_team_id = Prompt.ask("Enter your Apple Team ID")
-
-            console.print()
-            console.print("Locate your downloaded [bold].p8 file[/bold]")
-            console.print("(probably in your Downloads folder)")
-
-            while True:
-                p8_path = Prompt.ask("Enter the full path to your .p8 file")
-                p8_path = os.path.expanduser(p8_path)
-
-                if os.path.exists(p8_path):
-                    config_dir = get_config_dir()
-                    dest_path = config_dir / 'apple_music_key.p8'
-                    shutil.copy(p8_path, dest_path)
-                    apple_key_path = str(dest_path)
-                    console.print(f"[green]✓ Copied key to {dest_path}[/green]")
-                    break
-                else:
-                    console.print(f"[red]File not found: {p8_path}[/red]")
-
-            # Step 4: User Token
-            clear_screen()
-            console.print()
-            console.print(Panel.fit(
-                "[bold red]📕 Apple Music - Step 4 of 4[/bold red]\n\n"
-                "Get Your User Token",
-                border_style="red"
-            ))
-            console.print()
-            console.print("[yellow]Getting an Apple Music user token is complex.[/yellow]")
-            console.print()
-            console.print("Quick method (requires Chrome DevTools):")
-            console.print("1. Open https://music.apple.com in your browser")
-            console.print("2. Make sure you're logged in")
+            console.print("1. Open https://www.deezer.com in your browser")
+            console.print("2. Log in to your Deezer account")
             console.print("3. Open DevTools (F12 or Cmd+Option+I)")
-            console.print("4. Go to the Console tab")
-            console.print("5. Paste: [cyan]MusicKit.getInstance().musicUserToken[/cyan]")
-            console.print("6. Press Enter and copy the token (starts with 'eyJ...')")
+            console.print("4. Go to the [cyan]Application[/cyan] (Chrome) or [cyan]Storage[/cyan] (Firefox) tab")
+            console.print("5. Click [cyan]Cookies[/cyan] → [cyan]https://www.deezer.com[/cyan]")
+            console.print("6. Find the cookie named [cyan bold]'arl'[/cyan bold]")
+            console.print("7. Copy its value (long string of letters and numbers)")
             console.print()
 
-            if Confirm.ask("Do you have a user token now?", default=False):
-                apple_user_token = Prompt.ask("Enter your Apple Music user token", password=True)
-            else:
-                console.print()
-                console.print("[yellow]No problem! You can add the user token later.[/yellow]")
-                console.print("Just add it to your .env file")
+            if Confirm.ask("Open Deezer in browser?", default=True):
+                console.print("Opening https://www.deezer.com in your browser...")
+                webbrowser.open("https://www.deezer.com")
+                time.sleep(2)
+
+            console.print()
+            console.print("[bold]Method 2: Using Browser Extension[/bold]")
+            console.print()
+            console.print("• Install 'EditThisCookie' (Chrome) or 'Cookie-Editor' (Firefox)")
+            console.print("• Go to https://www.deezer.com and log in")
+            console.print("• Click the extension icon and find the 'arl' cookie")
+            console.print()
+
+            console.print("[dim]Press Enter when you're ready to enter your ARL token...[/dim]")
+            input()
+
+            # Get ARL token
+            clear_screen()
+            console.print()
+            console.print(Panel.fit(
+                "[bold magenta]🎵 Deezer - Enter ARL Token[/bold magenta]",
+                border_style="magenta"
+            ))
+            console.print()
+
+            deezer_arl = Prompt.ask("[bold]Enter your Deezer ARL token[/bold]", password=True)
+
+            # Test Deezer credentials
+            console.print()
+            console.print("[bold]Testing Deezer credentials...[/bold]")
+
+            try:
+                os.environ['DEEZER_ARL'] = deezer_arl
+
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[bold blue]Authenticating with Deezer..."),
+                    console=console
+                ) as progress:
+                    progress.add_task("auth", total=None)
+                    client = DeezerClient(arl_token=deezer_arl)
+                    success = client.authenticate()
+
+                if success:
+                    console.print(f"[green]✓ Successfully authenticated with Deezer (User ID: {client.user_id})![/green]")
+                else:
+                    console.print("[red]✗ Authentication failed[/red]")
+                    console.print("[yellow]Your ARL token may be invalid or expired.[/yellow]")
+                    if not Confirm.ask("Continue anyway?", default=False):
+                        console.print("[yellow]Setup cancelled.[/yellow]")
+                        return
+            except Exception as e:
+                console.print(f"[red]✗ Error: {e}[/red]")
+                if not Confirm.ask("Continue anyway?", default=False):
+                    console.print("[yellow]Setup cancelled.[/yellow]")
+                    return
 
     # Save credentials
     env_file = get_config_dir() / '.env'
@@ -415,17 +360,12 @@ def setup():
         f.write(f"export SPOTIFY_REDIRECT_URI=\"{spotify_redirect_uri}\"\n")
         f.write("\n")
 
-        if apple_team_id:
-            f.write("# Apple Music Credentials\n")
-            f.write(f"export APPLE_TEAM_ID=\"{apple_team_id}\"\n")
-            f.write(f"export APPLE_KEY_ID=\"{apple_key_id}\"\n")
-            f.write(f"export APPLE_PRIVATE_KEY_PATH=\"{apple_key_path}\"\n")
-            if apple_user_token:
-                f.write(f"export APPLE_USER_TOKEN=\"{apple_user_token}\"\n")
-            else:
-                f.write("# export APPLE_USER_TOKEN=\"\"  # Add this later\n")
+        if deezer_arl:
+            f.write("# Deezer Credentials\n")
+            f.write(f"export DEEZER_ARL=\"{deezer_arl}\"\n")
         else:
-            f.write("# Apple Music - Not configured\n")
+            f.write("# Deezer - Not configured\n")
+            f.write("# export DEEZER_ARL=\"\"  # Add your ARL token here\n")
 
     console.print(f"[green]✓ Credentials saved to {env_file}[/green]")
 
@@ -440,8 +380,8 @@ def setup():
     console.print()
     console.print("[bold]What's been set up:[/bold]")
     console.print("  [green]✓[/green] Spotify API credentials")
-    if apple_team_id:
-        console.print("  [green]✓[/green] Apple Music API credentials")
+    if deezer_arl:
+        console.print("  [green]✓[/green] Deezer API credentials")
     console.print(f"  [green]✓[/green] Configuration saved to {env_file}")
     console.print()
     console.print("[bold]Next steps:[/bold]")
@@ -486,13 +426,17 @@ def init():
         console.print("[yellow]⚠ Spotify credentials not set[/yellow]")
         console.print("  Set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET")
 
-    # Apple Music
-    if all([os.environ.get('APPLE_TEAM_ID'), os.environ.get('APPLE_KEY_ID'),
-            os.environ.get('APPLE_PRIVATE_KEY_PATH')]):
-        console.print("✓ Apple Music credentials found")
+    # Deezer
+    if os.environ.get('DEEZER_ARL'):
+        console.print("✓ Deezer credentials found")
+        try:
+            deezer = get_deezer_client()
+            console.print(f"✓ Authenticated with Deezer (User ID: {deezer.user_id})")
+        except Exception as e:
+            console.print(f"[yellow]⚠ Deezer authentication failed: {e}[/yellow]")
     else:
-        console.print("[yellow]⚠ Apple Music credentials not set[/yellow]")
-        console.print("  Set APPLE_TEAM_ID, APPLE_KEY_ID, and APPLE_PRIVATE_KEY_PATH")
+        console.print("[yellow]⚠ Deezer credentials not set[/yellow]")
+        console.print("  Set DEEZER_ARL environment variable")
 
     console.print("\n[green bold]✓ Initialization complete![/green bold]")
     console.print("\nNext steps:")
@@ -503,8 +447,8 @@ def init():
 
 @cli.command()
 def status():
-    """Show current sync status and pending changes."""
-    console.print("[bold]MusicDiff Status[/bold]\n")
+    """Show current sync status and playlist selection summary."""
+    console.print("[bold cyan]MusicDiff Status[/bold cyan]\n")
 
     # Check if initialized
     db_path = get_config_dir() / 'musicdiff.db'
@@ -514,42 +458,54 @@ def status():
 
     db = Database(str(db_path))
 
+    # Get playlist selections
+    selections = db.get_all_playlist_selections()
+    synced = db.get_all_synced_playlists()
+
+    if selections:
+        selected_count = sum(1 for p in selections if p.get('selected', False))
+        console.print(f"[bold]Playlist Selections:[/bold]")
+        console.print(f"  Total Spotify Playlists: {len(selections)}")
+        console.print(f"  Selected for Sync: [cyan]{selected_count}[/cyan]")
+        console.print(f"  Currently on Deezer: [green]{len(synced)}[/green]")
+    else:
+        console.print("[yellow]No playlists selected yet.[/yellow]")
+        console.print("Run [cyan]musicdiff select[/cyan] to choose playlists to sync\n")
+        return
+
     # Get last sync info
+    console.print()
     logs = db.get_sync_history(limit=1)
     if logs:
         last_sync = logs[0]
-        console.print(f"Last Sync: {last_sync['timestamp']}")
+        console.print(f"[bold]Last Sync:[/bold] {last_sync['timestamp']}")
         console.print(f"  Status: {last_sync['status']}")
-        console.print(f"  Changes: {last_sync['changes']}")
-        console.print(f"  Conflicts: {last_sync['conflicts']}")
+        console.print(f"  Playlists Synced: {last_sync.get('playlists_synced', 0)}")
+        console.print(f"  Created/Updated/Deleted: {last_sync.get('playlists_created', 0)}/" +
+                     f"{last_sync.get('playlists_updated', 0)}/{last_sync.get('playlists_deleted', 0)}")
     else:
-        console.print("Last Sync: Never")
-
-    # Get unresolved conflicts
-    conflicts = db.get_unresolved_conflicts()
-    if conflicts:
-        console.print(f"\n[yellow]Unresolved Conflicts: {len(conflicts)}[/yellow]")
-        console.print("Run 'musicdiff resolve' to handle conflicts")
+        console.print("[bold]Last Sync:[/bold] Never")
+        console.print("Run [cyan]musicdiff sync[/cyan] to start syncing\n")
 
     # Check daemon status
+    console.print()
     try:
         sync_engine = get_sync_engine()
         daemon = SyncDaemon(sync_engine)
-        status = daemon.status()
+        daemon_status = daemon.status()
 
-        console.print(f"\nDaemon: {'[green]Running[/green]' if status['running'] else '[dim]Not running[/dim]'}")
-        if status['running']:
-            console.print(f"  PID: {status['pid']}")
-            console.print(f"  Uptime: {status['uptime']}")
-            console.print(f"  Interval: {status['interval']}s")
+        console.print(f"[bold]Daemon:[/bold] {'[green]Running[/green]' if daemon_status['running'] else '[dim]Not running[/dim]'}")
+        if daemon_status['running']:
+            console.print(f"  PID: {daemon_status['pid']}")
+            console.print(f"  Interval: {daemon_status['interval']}s")
     except Exception:
         pass
 
 
 @cli.command()
 @click.option('--spotify-only', is_flag=True, help='Fetch from Spotify only')
-@click.option('--apple-only', is_flag=True, help='Fetch from Apple Music only')
-def fetch(spotify_only, apple_only):
+@click.option('--deezer-only', is_flag=True, help='Fetch from Deezer only')
+def fetch(spotify_only, deezer_only):
     """Fetch latest library state from both platforms."""
     console.print("[bold cyan]Fetching library data...[/bold cyan]\n")
 
@@ -561,12 +517,12 @@ def fetch(spotify_only, apple_only):
         albums = spotify.fetch_saved_albums()
         console.print(f"  ✓ {len(playlists)} playlists, {len(liked)} liked songs, {len(albums)} albums")
 
-    if not apple_only:
-        console.print("Fetching from Apple Music...")
-        apple = get_apple_client()
-        playlists = apple.fetch_library_playlists()
-        liked = apple.fetch_library_songs()
-        albums = apple.fetch_library_albums()
+    if not deezer_only:
+        console.print("Fetching from Deezer...")
+        deezer = get_deezer_client()
+        playlists = deezer.fetch_library_playlists()
+        liked = deezer.fetch_library_songs()
+        albums = deezer.fetch_library_albums()
         console.print(f"  ✓ {len(playlists)} playlists, {len(liked)} library songs, {len(albums)} albums")
 
     console.print("\n[green]✓ Fetch complete![/green]")
@@ -594,37 +550,117 @@ def diff(entity_type):
 
 
 @cli.command()
-@click.option('--auto', is_flag=True, help='Automatically apply non-conflicting changes')
-@click.option('--dry-run', is_flag=True, help='Show changes without applying')
-@click.option('--conflicts-only', is_flag=True, help='Only resolve conflicts')
-def sync(auto, dry_run, conflicts_only):
-    """Synchronize music libraries between platforms.
+def select():
+    """Select which Spotify playlists to sync to Deezer.
 
-    \b
-    Modes:
-        Interactive (default): Review each change before applying
-        Auto (--auto):         Apply non-conflicting changes automatically
-        Dry-run (--dry-run):   Show what would be synced
+    Opens an interactive checkbox interface to choose playlists.
+    Selected playlists will be synced when you run 'musicdiff sync'.
+    """
+    console.print("[bold cyan]Fetching your Spotify playlists...[/bold cyan]\n")
+
+    db = get_database()
+    spotify = get_spotify_client()
+    ui = UI()
+
+    # Fetch all Spotify playlists
+    try:
+        sp_playlists = spotify.fetch_playlists()
+    except Exception as e:
+        console.print(f"[red]Error fetching Spotify playlists: {e}[/red]")
+        sys.exit(1)
+
+    if not sp_playlists:
+        console.print("[yellow]No Spotify playlists found[/yellow]")
+        return
+
+    # Convert to simple dicts
+    playlist_dicts = []
+    for p in sp_playlists:
+        playlist_dicts.append({
+            'spotify_id': p.spotify_id,
+            'name': p.name,
+            'track_count': len(p.tracks)
+        })
+
+    # Get current selections from database
+    current_selections_list = db.get_all_playlist_selections()
+    current_selections = {p['spotify_id']: p['selected'] for p in current_selections_list}
+
+    # Show selection UI
+    new_selections = ui.select_playlists(playlist_dicts, current_selections)
+
+    # Save selections to database
+    for playlist in playlist_dicts:
+        spotify_id = playlist['spotify_id']
+        selected = new_selections.get(spotify_id, False)
+
+        db.upsert_playlist_selection(
+            spotify_id=spotify_id,
+            name=playlist['name'],
+            track_count=playlist['track_count'],
+            selected=selected
+        )
+
+    # Show summary
+    selected_count = sum(1 for selected in new_selections.values() if selected)
+    console.print(f"\n[green]✓ Selection saved: {selected_count}/{len(playlist_dicts)} playlists selected[/green]")
+    console.print("\nRun [cyan]musicdiff sync[/cyan] to transfer selected playlists to Deezer")
+
+
+@cli.command()
+def list():
+    """Show all Spotify playlists with sync status.
+
+    Displays which playlists are selected for sync and their last sync time.
+    """
+    db = get_database()
+    ui = UI()
+
+    # Get playlist selections from database
+    selections = db.get_all_playlist_selections()
+
+    if not selections:
+        console.print("[yellow]No playlists found in database.[/yellow]")
+        console.print("Run [cyan]musicdiff select[/cyan] to choose playlists to sync")
+        return
+
+    # Get synced playlists
+    synced = db.get_all_synced_playlists()
+    synced_dict = {s['spotify_id']: s for s in synced}
+
+    # Show list
+    ui.show_playlist_list(selections, synced_dict)
+
+
+@cli.command()
+@click.option('--dry-run', is_flag=True, help='Show what would be synced without applying changes')
+def sync(dry_run):
+    """Transfer selected Spotify playlists to Deezer.
+
+    Syncs all selected playlists from Spotify to Deezer. If a playlist already
+    exists on Deezer, it will be updated to match Spotify exactly (full overwrite).
+
+    Use --dry-run to preview changes without applying them.
     """
     if dry_run:
         console.print("[dim]DRY RUN - No changes will be applied[/dim]\n")
-
-    # Determine sync mode
-    if conflicts_only:
-        mode = SyncMode.CONFLICTS_ONLY
-    elif auto:
-        mode = SyncMode.AUTO
-    elif dry_run:
         mode = SyncMode.DRY_RUN
     else:
-        mode = SyncMode.INTERACTIVE
+        mode = SyncMode.NORMAL
 
     # Get sync engine and run sync
-    sync_engine = get_sync_engine()
-    result = sync_engine.sync(mode=mode)
+    try:
+        sync_engine = get_sync_engine()
+        result = sync_engine.sync(mode=mode)
 
-    # Result is already displayed by sync engine UI
-    console.print()  # Add spacing
+        # Show summary
+        if not dry_run:
+            ui = UI()
+            ui.show_sync_summary(result)
+
+    except Exception as e:
+        console.print(f"[red]Sync failed: {e}[/red]")
+        sys.exit(1)
 
 
 @cli.command()
@@ -645,27 +681,17 @@ def log(limit, verbose):
         status_color = "green" if entry['status'] == 'success' else "yellow"
         console.print(f"[{status_color}]●[/{status_color}] {entry['timestamp']}")
         console.print(f"  Status: {entry['status']}")
-        console.print(f"  Changes: {entry['changes']}, Conflicts: {entry['conflicts']}")
+        console.print(f"  Synced: {entry.get('playlists_synced', 0)} playlists " +
+                     f"({entry.get('playlists_created', 0)} created, " +
+                     f"{entry.get('playlists_updated', 0)} updated, " +
+                     f"{entry.get('playlists_deleted', 0)} deleted)")
 
         if verbose and entry['details']:
             import json
-            details = json.loads(entry['details'])
-            console.print(f"  Duration: {details.get('duration', 'N/A')}s")
-            if details.get('failed_changes'):
-                console.print(f"  Failed: {details['failed_changes']}")
+            details = json.loads(entry['details']) if isinstance(entry['details'], str) else entry['details']
+            if details and details.get('failed'):
+                console.print(f"  Failed: {', '.join(details['failed'])}")
         console.print()
-
-
-@cli.command()
-def resolve():
-    """Resume conflict resolution for pending conflicts."""
-    console.print("[bold]Resolving conflicts...[/bold]\n")
-
-    # Use conflicts-only mode
-    sync_engine = get_sync_engine()
-    result = sync_engine.sync(mode=SyncMode.CONFLICTS_ONLY)
-
-    console.print(f"\n{result.summary()}")
 
 
 @cli.command()
@@ -758,11 +784,8 @@ def config(key, value):
             console.print("  SPOTIFY_CLIENT_ID")
             console.print("  SPOTIFY_CLIENT_SECRET")
             console.print("  SPOTIFY_REDIRECT_URI (optional, default: http://localhost:8888/callback)")
-            console.print("\nApple Music:")
-            console.print("  APPLE_TEAM_ID")
-            console.print("  APPLE_KEY_ID")
-            console.print("  APPLE_PRIVATE_KEY_PATH")
-            console.print("  APPLE_USER_TOKEN")
+            console.print("\nDeezer:")
+            console.print("  DEEZER_ARL")
         return
 
     # TODO: Implement config get/set with YAML

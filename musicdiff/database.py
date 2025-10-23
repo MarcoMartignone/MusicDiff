@@ -6,9 +6,8 @@ See docs/DATABASE.md for detailed documentation.
 
 import sqlite3
 import json
-import uuid
 from pathlib import Path
-from typing import Optional, List, Dict, Tuple
+from typing import Optional, List, Dict
 from datetime import datetime
 
 
@@ -44,8 +43,7 @@ class Database:
             CREATE TABLE IF NOT EXISTS tracks (
                 isrc TEXT PRIMARY KEY,
                 spotify_id TEXT UNIQUE,
-                apple_id TEXT UNIQUE,
-                apple_catalog_id TEXT,
+                deezer_id TEXT UNIQUE,
                 title TEXT NOT NULL,
                 artist TEXT NOT NULL,
                 album TEXT NOT NULL,
@@ -56,73 +54,45 @@ class Database:
         """)
 
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_spotify_id ON tracks(spotify_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_apple_id ON tracks(apple_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_deezer_id ON tracks(deezer_id)")
 
-        # Playlists table
+        # Playlist selections table - stores which Spotify playlists user wants to sync
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS playlists (
-                id TEXT PRIMARY KEY,
-                spotify_id TEXT UNIQUE,
-                apple_id TEXT UNIQUE,
+            CREATE TABLE IF NOT EXISTS playlist_selections (
+                spotify_id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
-                description TEXT DEFAULT '',
-                public BOOLEAN DEFAULT 0,
-                spotify_snapshot_id TEXT,
                 track_count INTEGER DEFAULT 0,
+                selected BOOLEAN DEFAULT 1,
+                last_synced TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
 
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_playlist_spotify ON playlists(spotify_id)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_playlist_apple ON playlists(apple_id)")
-
-        # Playlist tracks junction table
+        # Synced playlists table - tracks what's currently on Deezer
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS playlist_tracks (
-                playlist_id TEXT NOT NULL,
-                track_isrc TEXT NOT NULL,
-                position INTEGER NOT NULL,
-                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (playlist_id, track_isrc),
-                FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE,
-                FOREIGN KEY (track_isrc) REFERENCES tracks(isrc) ON DELETE CASCADE
-            )
-        """)
-
-        # Liked songs table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS liked_songs (
-                track_isrc TEXT PRIMARY KEY,
-                spotify_liked BOOLEAN DEFAULT 0,
-                apple_liked BOOLEAN DEFAULT 0,
-                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (track_isrc) REFERENCES tracks(isrc) ON DELETE CASCADE
-            )
-        """)
-
-        # Albums table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS albums (
-                id TEXT PRIMARY KEY,
-                spotify_id TEXT UNIQUE,
-                apple_id TEXT UNIQUE,
+            CREATE TABLE IF NOT EXISTS synced_playlists (
+                spotify_id TEXT PRIMARY KEY,
+                deezer_id TEXT NOT NULL,
                 name TEXT NOT NULL,
-                artist TEXT NOT NULL,
-                release_date TEXT,
-                total_tracks INTEGER,
-                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                track_count INTEGER DEFAULT 0,
+                synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (spotify_id) REFERENCES playlist_selections(spotify_id) ON DELETE CASCADE
             )
         """)
 
-        # Sync log table
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_synced_deezer ON synced_playlists(deezer_id)")
+
+        # Sync log table - simplified for one-way sync
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS sync_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 status TEXT NOT NULL,
-                changes_applied INTEGER DEFAULT 0,
-                conflicts_count INTEGER DEFAULT 0,
+                playlists_synced INTEGER DEFAULT 0,
+                playlists_created INTEGER DEFAULT 0,
+                playlists_updated INTEGER DEFAULT 0,
+                playlists_deleted INTEGER DEFAULT 0,
                 duration_seconds REAL,
                 details TEXT,
                 auto_sync BOOLEAN DEFAULT 0
@@ -130,21 +100,6 @@ class Database:
         """)
 
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sync_timestamp ON sync_log(timestamp)")
-
-        # Conflicts table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS conflicts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                type TEXT NOT NULL,
-                entity_id TEXT NOT NULL,
-                spotify_data TEXT,
-                apple_data TEXT,
-                local_data TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                resolved_at TIMESTAMP,
-                resolution TEXT
-            )
-        """)
 
         # Metadata table
         cursor.execute("""
@@ -158,7 +113,7 @@ class Database:
         # Initialize schema version
         cursor.execute("""
             INSERT OR IGNORE INTO metadata (key, value)
-            VALUES ('schema_version', '1')
+            VALUES ('schema_version', '2')
         """)
 
         conn.commit()
@@ -199,20 +154,19 @@ class Database:
         """Insert or update track data.
 
         Args:
-            track: Dict with keys: isrc, spotify_id, apple_id, apple_catalog_id,
+            track: Dict with keys: isrc, spotify_id, deezer_id,
                    title, artist, album, duration_ms
         """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
         cursor.execute("""
-            INSERT INTO tracks (isrc, spotify_id, apple_id, apple_catalog_id,
+            INSERT INTO tracks (isrc, spotify_id, deezer_id,
                                title, artist, album, duration_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(isrc) DO UPDATE SET
                 spotify_id = COALESCE(excluded.spotify_id, spotify_id),
-                apple_id = COALESCE(excluded.apple_id, apple_id),
-                apple_catalog_id = COALESCE(excluded.apple_catalog_id, apple_catalog_id),
+                deezer_id = COALESCE(excluded.deezer_id, deezer_id),
                 title = excluded.title,
                 artist = excluded.artist,
                 album = excluded.album,
@@ -221,8 +175,7 @@ class Database:
         """, (
             track.get('isrc'),
             track.get('spotify_id'),
-            track.get('apple_id'),
-            track.get('apple_catalog_id'),
+            track.get('deezer_id'),
             track.get('title', ''),
             track.get('artist', ''),
             track.get('album', ''),
@@ -260,230 +213,200 @@ class Database:
         conn.close()
         return dict(result) if result else None
 
-    def get_track_by_apple_id(self, apple_id: str) -> Optional[Dict]:
-        """Get track by Apple Music ID."""
+    def get_track_by_deezer_id(self, deezer_id: str) -> Optional[Dict]:
+        """Get track by Deezer ID."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
         result = cursor.execute(
-            "SELECT * FROM tracks WHERE apple_id = ?",
-            (apple_id,)
+            "SELECT * FROM tracks WHERE deezer_id = ?",
+            (deezer_id,)
         ).fetchone()
 
         conn.close()
         return dict(result) if result else None
 
-    # Playlist operations
+    # Playlist selection operations
 
-    def upsert_playlist(self, playlist: Dict) -> str:
-        """Insert or update playlist.
+    def upsert_playlist_selection(self, spotify_id: str, name: str, track_count: int = 0, selected: bool = True) -> None:
+        """Insert or update playlist selection.
 
         Args:
-            playlist: Dict with keys: id (optional), spotify_id, apple_id, name,
-                     description, public, spotify_snapshot_id
-
-        Returns:
-            Playlist ID (UUID)
+            spotify_id: Spotify playlist ID
+            name: Playlist name
+            track_count: Number of tracks
+            selected: Whether playlist is selected for sync
         """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        playlist_id = playlist.get('id') or str(uuid.uuid4())
-
         cursor.execute("""
-            INSERT INTO playlists (id, spotify_id, apple_id, name, description,
-                                  public, spotify_snapshot_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                spotify_id = COALESCE(excluded.spotify_id, spotify_id),
-                apple_id = COALESCE(excluded.apple_id, apple_id),
+            INSERT INTO playlist_selections (spotify_id, name, track_count, selected)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(spotify_id) DO UPDATE SET
                 name = excluded.name,
-                description = excluded.description,
-                public = excluded.public,
-                spotify_snapshot_id = COALESCE(excluded.spotify_snapshot_id, spotify_snapshot_id),
+                track_count = excluded.track_count,
+                selected = excluded.selected,
                 updated_at = CURRENT_TIMESTAMP
-        """, (
-            playlist_id,
-            playlist.get('spotify_id'),
-            playlist.get('apple_id'),
-            playlist.get('name', ''),
-            playlist.get('description', ''),
-            playlist.get('public', False),
-            playlist.get('spotify_snapshot_id')
-        ))
+        """, (spotify_id, name, track_count, selected))
 
         conn.commit()
         conn.close()
-        return playlist_id
 
-    def get_playlist(self, playlist_id: str) -> Optional[Dict]:
-        """Get playlist by ID."""
+    def get_all_playlist_selections(self) -> List[Dict]:
+        """Get all playlist selections."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        result = cursor.execute(
-            "SELECT * FROM playlists WHERE id = ?",
-            (playlist_id,)
-        ).fetchone()
+        results = cursor.execute("""
+            SELECT * FROM playlist_selections
+            ORDER BY name
+        """).fetchall()
 
         conn.close()
-        return dict(result) if result else None
+        return [dict(row) for row in results]
 
-    def get_playlist_by_spotify_id(self, spotify_id: str) -> Optional[Dict]:
-        """Get playlist by Spotify ID."""
+    def get_selected_playlists(self) -> List[Dict]:
+        """Get only selected playlists."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        results = cursor.execute("""
+            SELECT * FROM playlist_selections
+            WHERE selected = 1
+            ORDER BY name
+        """).fetchall()
+
+        conn.close()
+        return [dict(row) for row in results]
+
+    def update_playlist_selection(self, spotify_id: str, selected: bool) -> None:
+        """Update playlist selection status.
+
+        Args:
+            spotify_id: Spotify playlist ID
+            selected: New selection status
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            UPDATE playlist_selections
+            SET selected = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE spotify_id = ?
+        """, (selected, spotify_id))
+
+        conn.commit()
+        conn.close()
+
+    def mark_playlist_synced(self, spotify_id: str) -> None:
+        """Mark playlist as synced (update last_synced timestamp).
+
+        Args:
+            spotify_id: Spotify playlist ID
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            UPDATE playlist_selections
+            SET last_synced = CURRENT_TIMESTAMP
+            WHERE spotify_id = ?
+        """, (spotify_id,))
+
+        conn.commit()
+        conn.close()
+
+    # Synced playlists operations
+
+    def upsert_synced_playlist(self, spotify_id: str, deezer_id: str, name: str, track_count: int = 0) -> None:
+        """Insert or update synced playlist record.
+
+        Args:
+            spotify_id: Spotify playlist ID
+            deezer_id: Deezer playlist ID
+            name: Playlist name
+            track_count: Number of tracks
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO synced_playlists (spotify_id, deezer_id, name, track_count, synced_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(spotify_id) DO UPDATE SET
+                deezer_id = excluded.deezer_id,
+                name = excluded.name,
+                track_count = excluded.track_count,
+                synced_at = CURRENT_TIMESTAMP
+        """, (spotify_id, deezer_id, name, track_count))
+
+        conn.commit()
+        conn.close()
+
+    def get_synced_playlist(self, spotify_id: str) -> Optional[Dict]:
+        """Get synced playlist by Spotify ID.
+
+        Args:
+            spotify_id: Spotify playlist ID
+
+        Returns:
+            Synced playlist dict or None
+        """
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
         result = cursor.execute(
-            "SELECT * FROM playlists WHERE spotify_id = ?",
+            "SELECT * FROM synced_playlists WHERE spotify_id = ?",
             (spotify_id,)
         ).fetchone()
 
         conn.close()
         return dict(result) if result else None
 
-    def get_all_playlists(self) -> List[Dict]:
-        """Get all playlists."""
+    def get_all_synced_playlists(self) -> List[Dict]:
+        """Get all synced playlists."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        results = cursor.execute("SELECT * FROM playlists").fetchall()
+        results = cursor.execute("SELECT * FROM synced_playlists").fetchall()
 
         conn.close()
         return [dict(row) for row in results]
 
-    def delete_playlist(self, playlist_id: str) -> None:
-        """Delete playlist."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        cursor.execute("DELETE FROM playlists WHERE id = ?", (playlist_id,))
-
-        conn.commit()
-        conn.close()
-
-    def set_playlist_tracks(self, playlist_id: str, track_isrcs: List[str]) -> None:
-        """Replace all tracks in a playlist.
+    def delete_synced_playlist(self, spotify_id: str) -> None:
+        """Delete synced playlist record.
 
         Args:
-            playlist_id: Playlist ID
-            track_isrcs: List of track ISRCs in order
+            spotify_id: Spotify playlist ID
         """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        # Delete existing tracks
-        cursor.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?", (playlist_id,))
-
-        # Insert new tracks with positions
-        for position, track_isrc in enumerate(track_isrcs):
-            cursor.execute("""
-                INSERT INTO playlist_tracks (playlist_id, track_isrc, position)
-                VALUES (?, ?, ?)
-            """, (playlist_id, track_isrc, position))
-
-        # Update track count
-        cursor.execute("""
-            UPDATE playlists SET track_count = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        """, (len(track_isrcs), playlist_id))
+        cursor.execute("DELETE FROM synced_playlists WHERE spotify_id = ?", (spotify_id,))
 
         conn.commit()
         conn.close()
-
-    def get_playlist_tracks(self, playlist_id: str) -> List[str]:
-        """Get track ISRCs for a playlist in order."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        results = cursor.execute("""
-            SELECT track_isrc FROM playlist_tracks
-            WHERE playlist_id = ?
-            ORDER BY position
-        """, (playlist_id,)).fetchall()
-
-        conn.close()
-        return [row[0] for row in results]
-
-    # Liked songs operations
-
-    def set_liked_songs(self, track_isrcs: List[str], platform: str) -> None:
-        """Set liked songs for a platform.
-
-        Args:
-            track_isrcs: List of track ISRCs
-            platform: 'spotify' or 'apple'
-        """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        # Clear existing liked status for this platform
-        if platform == 'spotify':
-            cursor.execute("DELETE FROM liked_songs WHERE spotify_liked = 1")
-        else:
-            cursor.execute("DELETE FROM liked_songs WHERE apple_liked = 1")
-
-        # Insert liked songs
-        for isrc in track_isrcs:
-            if platform == 'spotify':
-                cursor.execute("""
-                    INSERT INTO liked_songs (track_isrc, spotify_liked)
-                    VALUES (?, 1)
-                    ON CONFLICT(track_isrc) DO UPDATE SET spotify_liked = 1
-                """, (isrc,))
-            else:
-                cursor.execute("""
-                    INSERT INTO liked_songs (track_isrc, apple_liked)
-                    VALUES (?, 1)
-                    ON CONFLICT(track_isrc) DO UPDATE SET apple_liked = 1
-                """, (isrc,))
-
-        conn.commit()
-        conn.close()
-
-    def get_liked_songs(self, platform: Optional[str] = None) -> List[str]:
-        """Get liked song ISRCs.
-
-        Args:
-            platform: 'spotify', 'apple', or None for both
-
-        Returns:
-            List of track ISRCs
-        """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        if platform == 'spotify':
-            results = cursor.execute(
-                "SELECT track_isrc FROM liked_songs WHERE spotify_liked = 1"
-            ).fetchall()
-        elif platform == 'apple':
-            results = cursor.execute(
-                "SELECT track_isrc FROM liked_songs WHERE apple_liked = 1"
-            ).fetchall()
-        else:
-            results = cursor.execute(
-                "SELECT track_isrc FROM liked_songs WHERE spotify_liked = 1 OR apple_liked = 1"
-            ).fetchall()
-
-        conn.close()
-        return [row[0] for row in results]
 
     # Sync log operations
 
-    def add_sync_log(self, status: str, changes: int, conflicts: int,
-                     details: Dict, duration: float = 0, auto_sync: bool = False) -> None:
+    def add_sync_log(self, status: str, playlists_synced: int = 0, playlists_created: int = 0,
+                     playlists_updated: int = 0, playlists_deleted: int = 0,
+                     details: Dict = None, duration: float = 0, auto_sync: bool = False) -> None:
         """Add sync log entry.
 
         Args:
             status: 'success', 'partial', or 'failed'
-            changes: Number of changes applied
-            conflicts: Number of conflicts detected
-            details: Dict with detailed change information
+            playlists_synced: Total number of playlists synced
+            playlists_created: Number of playlists created on Deezer
+            playlists_updated: Number of playlists updated on Deezer
+            playlists_deleted: Number of playlists deleted from Deezer
+            details: Dict with detailed sync information
             duration: Sync duration in seconds
             auto_sync: Whether this was an automatic sync
         """
@@ -491,10 +414,11 @@ class Database:
         cursor = conn.cursor()
 
         cursor.execute("""
-            INSERT INTO sync_log (status, changes_applied, conflicts_count,
-                                 details, duration_seconds, auto_sync)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (status, changes, conflicts, json.dumps(details), duration, auto_sync))
+            INSERT INTO sync_log (status, playlists_synced, playlists_created, playlists_updated,
+                                 playlists_deleted, details, duration_seconds, auto_sync)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (status, playlists_synced, playlists_created, playlists_updated, playlists_deleted,
+              json.dumps(details) if details else None, duration, auto_sync))
 
         conn.commit()
         conn.close()
@@ -528,86 +452,6 @@ class Database:
             logs.append(log)
 
         return logs
-
-    # Conflict operations
-
-    def add_conflict(self, conflict_type: str, entity_id: str,
-                    spotify_data: Dict, apple_data: Dict,
-                    local_data: Optional[Dict] = None) -> int:
-        """Add a conflict.
-
-        Args:
-            conflict_type: 'playlist', 'liked_song', 'album'
-            entity_id: ID of the conflicting entity
-            spotify_data: Spotify state as dict
-            apple_data: Apple Music state as dict
-            local_data: Local state as dict (optional)
-
-        Returns:
-            Conflict ID
-        """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            INSERT INTO conflicts (type, entity_id, spotify_data, apple_data, local_data)
-            VALUES (?, ?, ?, ?, ?)
-        """, (
-            conflict_type,
-            entity_id,
-            json.dumps(spotify_data),
-            json.dumps(apple_data),
-            json.dumps(local_data) if local_data else None
-        ))
-
-        conflict_id = cursor.lastrowid
-        conn.commit()
-        conn.close()
-        return conflict_id
-
-    def get_unresolved_conflicts(self) -> List[Dict]:
-        """Get all unresolved conflicts."""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        results = cursor.execute("""
-            SELECT * FROM conflicts
-            WHERE resolved_at IS NULL
-            ORDER BY created_at
-        """).fetchall()
-
-        conn.close()
-
-        conflicts = []
-        for row in results:
-            conflict = dict(row)
-            conflict['spotify_data'] = json.loads(conflict['spotify_data'])
-            conflict['apple_data'] = json.loads(conflict['apple_data'])
-            if conflict.get('local_data'):
-                conflict['local_data'] = json.loads(conflict['local_data'])
-            conflicts.append(conflict)
-
-        return conflicts
-
-    def resolve_conflict(self, conflict_id: int, resolution: str) -> None:
-        """Mark conflict as resolved.
-
-        Args:
-            conflict_id: Conflict ID
-            resolution: Resolution choice ('spotify', 'apple', 'manual', 'skip')
-        """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-
-        cursor.execute("""
-            UPDATE conflicts
-            SET resolved_at = CURRENT_TIMESTAMP, resolution = ?
-            WHERE id = ?
-        """, (resolution, conflict_id))
-
-        conn.commit()
-        conn.close()
 
     def close(self):
         """Close database connection."""

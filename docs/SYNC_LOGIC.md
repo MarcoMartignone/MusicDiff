@@ -2,43 +2,45 @@
 
 ## Overview
 
-The Sync module (`sync.py`) orchestrates the entire synchronization process. It coordinates between the diff engine, platform clients, and database to apply changes safely.
+The Sync module (`sync.py`) orchestrates the one-way synchronization process from Spotify to Deezer. It coordinates between the Spotify client, Deezer client, track matcher, and database to safely mirror selected playlists.
 
 ## Sync Workflow
 
 ```
 ┌─────────────────────────────────────────┐
-│ 1. Fetch Current State                  │
-│    - Spotify API                         │
-│    - Apple Music API                     │
+│ 1. Get Selected Playlists               │
+│    - Query database for selections       │
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 2. Load Local State                     │
-│    - From SQLite database                │
+│ 2. Fetch from Spotify                    │
+│    - Get complete playlist data          │
+│    - Include all tracks with ISRC        │
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 3. Compute Diff                          │
-│    - Run 3-way diff algorithm            │
-│    - Categorize: auto-merge vs conflicts │
+│ 3. Match Tracks to Deezer                │
+│    - Search Deezer by ISRC               │
+│    - Cache matches in database           │
+│    - Skip tracks without ISRC            │
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 4. Resolve Conflicts (if any)           │
-│    - Interactive UI or auto-skip         │
+│ 4. Apply to Deezer                       │
+│    - Create new playlists                │
+│    - Update existing (full overwrite)    │
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 5. Apply Changes                         │
-│    - Spotify API calls                   │
-│    - Apple Music API calls               │
+│ 5. Clean Deselected                     │
+│    - Delete playlists no longer selected │
 └────────────────┬────────────────────────┘
                  │
 ┌────────────────▼────────────────────────┐
-│ 6. Update Local State                   │
-│    - Save to database                    │
-│    - Log sync to history                 │
+│ 6. Update Database                       │
+│    - Mark playlists as synced            │
+│    - Update sync timestamps              │
+│    - Log sync results                    │
 └─────────────────────────────────────────┘
 ```
 
@@ -46,361 +48,357 @@ The Sync module (`sync.py`) orchestrates the entire synchronization process. It 
 
 ```python
 class SyncEngine:
-    def __init__(self, spotify_client, apple_client, database, ui)
-    def sync(self, mode: SyncMode = SyncMode.INTERACTIVE) -> SyncResult
-    def apply_changes(self, changes: List[Change]) -> ApplyResult
-    def apply_change(self, change: Change) -> bool
+    def __init__(self, spotify_client, deezer_client, database, ui)
+    def sync(self, mode: SyncMode = SyncMode.NORMAL) -> SyncResult
+    def _fetch_spotify_playlists(self, playlist_ids: List[str]) -> List[Playlist]
+    def _create_deezer_playlist(self, spotify_playlist: Playlist) -> str
+    def _update_deezer_playlist(self, deezer_id: str, spotify_playlist: Playlist) -> None
+    def _match_tracks_to_deezer(self, spotify_tracks: List[Track]) -> List[str]
+    def _delete_deselected_playlists(self, selected_ids: List[str]) -> int
 ```
 
 ## Sync Modes
 
-### 1. Interactive Mode
+### 1. Normal Mode (Default)
 
-Default mode for manual syncs.
+Standard sync mode for regular use.
 
 **Behavior:**
-- Shows all changes before applying
-- Prompts for confirmation on each change type
-- Opens interactive UI for conflicts
-- Progress feedback in terminal
+- Syncs all selected playlists
+- Shows progress bar
+- Displays success/error messages
+- Updates database
+- Returns sync results
 
 **Use Case:** `musicdiff sync`
 
----
-
-### 2. Auto Mode
-
-Automatically applies non-conflicting changes.
-
-**Behavior:**
-- Auto-applies all auto-merge changes
-- Skips conflicts (logs them for later)
-- No user prompts
-- Suitable for scheduled syncs
-
-**Use Case:** `musicdiff sync --auto` or daemon mode
+```python
+result = sync_engine.sync(mode=SyncMode.NORMAL)
+```
 
 ---
 
-### 3. Dry-Run Mode
+### 2. Dry-Run Mode
 
-Shows what would be synced without applying.
+Preview mode - shows what would be synced without making changes.
 
 **Behavior:**
-- Computes full diff
-- Displays planned changes
-- Does NOT call any platform APIs
-- Does NOT update local state
+- Fetches playlists from Spotify
+- Checks what would be created/updated/deleted
+- Does NOT call Deezer API
+- Does NOT update database
+- Returns empty result
 
 **Use Case:** `musicdiff sync --dry-run`
 
----
-
-### 4. Conflicts-Only Mode
-
-Only resolves pending conflicts.
-
-**Behavior:**
-- Loads conflicts from database
-- Opens interactive UI
-- Applies resolutions
-- Skips fetching/diffing
-
-**Use Case:** `musicdiff resolve`
-
----
-
-## Change Application
-
-### Applying to Spotify
-
 ```python
-def apply_to_spotify(self, change: Change) -> bool:
-    """Apply change to Spotify."""
-
-    if change.change_type == ChangeType.PLAYLIST_CREATED:
-        # Create playlist on Spotify
-        playlist_id = self.spotify.create_playlist(
-            name=change.data['name'],
-            description=change.data['description'],
-            public=change.data.get('public', False)
-        )
-
-        # Add tracks
-        track_uris = [self._get_spotify_uri(isrc) for isrc in change.data['tracks']]
-        self.spotify.add_tracks_to_playlist(playlist_id, track_uris)
-
-    elif change.change_type == ChangeType.PLAYLIST_UPDATED:
-        # Update playlist metadata or tracks
-        if 'name' in change.data:
-            self.spotify.update_playlist_name(change.entity_id, change.data['name'])
-
-        if 'tracks_added' in change.data:
-            track_uris = [self._get_spotify_uri(isrc) for isrc in change.data['tracks_added']]
-            self.spotify.add_tracks_to_playlist(change.entity_id, track_uris)
-
-        if 'tracks_removed' in change.data:
-            track_uris = [self._get_spotify_uri(isrc) for isrc in change.data['tracks_removed']]
-            self.spotify.remove_tracks_from_playlist(change.entity_id, track_uris)
-
-    elif change.change_type == ChangeType.PLAYLIST_DELETED:
-        self.spotify.delete_playlist(change.entity_id)
-
-    elif change.change_type == ChangeType.LIKED_SONG_ADDED:
-        track_ids = [self._get_spotify_id(isrc) for isrc in change.data['tracks']]
-        self.spotify.save_tracks(track_ids)
-
-    elif change.change_type == ChangeType.LIKED_SONG_REMOVED:
-        track_ids = [self._get_spotify_id(isrc) for isrc in change.data['tracks']]
-        self.spotify.remove_saved_tracks(track_ids)
-
-    return True
+result = sync_engine.sync(mode=SyncMode.DRY_RUN)
 ```
 
-### Applying to Apple Music
-
-Similar logic but using Apple Music API methods.
-
-**Key Difference**: Tracks must be in library before adding to playlist.
-
-```python
-def apply_to_apple(self, change: Change) -> bool:
-    """Apply change to Apple Music."""
-
-    if change.change_type == ChangeType.PLAYLIST_CREATED:
-        # Ensure all tracks are in library first
-        track_ids = [self._get_apple_id(isrc) for isrc in change.data['tracks']]
-        self.apple.add_to_library(track_ids)
-
-        # Create playlist
-        playlist_id = self.apple.create_playlist(
-            name=change.data['name'],
-            description=change.data['description']
-        )
-
-        # Add tracks to playlist
-        self.apple.add_tracks_to_playlist(playlist_id, track_ids)
-
-    # ... similar for other change types
+**Example Output:**
 ```
+[DRY RUN] The following changes would be made:
 
-## Error Handling
+  CREATE: Summer Vibes 2025 (45 tracks)
+  UPDATE: Workout Mix (32 tracks)
+  UPDATE: Party Hits (67 tracks)
+  DELETE: Old Playlist
 
-### Transactional Application
-
-Changes should be atomic where possible.
-
-```python
-def apply_changes(self, changes: List[Change]) -> ApplyResult:
-    """Apply all changes with error recovery."""
-
-    applied = []
-    failed = []
-
-    for change in changes:
-        try:
-            success = self.apply_change(change)
-            if success:
-                applied.append(change)
-            else:
-                failed.append((change, "Application returned False"))
-
-        except SpotifyException as e:
-            # Spotify API error
-            failed.append((change, f"Spotify error: {e}"))
-            if e.http_status >= 500:
-                # Server error, stop sync
-                break
-
-        except AppleMusicException as e:
-            # Apple Music API error
-            failed.append((change, f"Apple Music error: {e}"))
-
-        except Exception as e:
-            # Unexpected error
-            failed.append((change, f"Unexpected error: {e}"))
-
-    return ApplyResult(applied=applied, failed=failed)
-```
-
-### Rollback Strategy
-
-**Problem**: What if sync fails halfway?
-
-**Solutions:**
-
-1. **No Rollback** (Current approach)
-   - Changes are applied incrementally
-   - Failed changes logged
-   - User can retry or manually fix
-
-2. **Two-Phase Commit** (Future enhancement)
-   - Prepare all changes first
-   - Apply atomically
-   - Rollback on any failure
-
----
-
-## Conflict Resolution
-
-### Interactive Resolution
-
-User chooses how to resolve each conflict.
-
-```python
-def resolve_conflict_interactive(self, conflict: Conflict) -> str:
-    """Show UI and get user's resolution choice."""
-
-    # Display conflict details
-    self.ui.show_conflict(conflict)
-
-    # Prompt for resolution
-    choice = self.ui.prompt_choice([
-        "Keep Spotify version",
-        "Keep Apple Music version",
-        "Manual merge",
-        "Skip for now"
-    ])
-
-    if choice == "Keep Spotify version":
-        return 'spotify'
-    elif choice == "Keep Apple Music version":
-        return 'apple'
-    elif choice == "Manual merge":
-        # Open interactive merge UI
-        return self.ui.manual_merge(conflict)
-    else:
-        return 'skip'
-```
-
-### Auto Resolution
-
-For daemon mode, conflicts are skipped.
-
-```python
-def resolve_conflict_auto(self, conflict: Conflict) -> str:
-    """Auto-resolve conflict (usually skip)."""
-
-    # Save to conflicts table for later manual resolution
-    self.db.add_conflict(
-        type=conflict.entity_type,
-        entity_id=conflict.entity_id,
-        spotify_data=conflict.spotify_change.data,
-        apple_data=conflict.apple_change.data
-    )
-
-    return 'skip'
+No changes applied (dry run mode)
 ```
 
 ---
 
-## State Update
+## Sync Process Details
 
-After successful sync, update local database.
+### Step 1: Get Selected Playlists
 
 ```python
-def update_local_state(self, spotify_state, apple_state):
-    """Update local database with new state."""
+selected = self.db.get_selected_playlists()
+```
 
-    # Update playlists
-    for playlist in spotify_state.playlists:
-        self.db.upsert_playlist(playlist)
+Retrieves playlists marked as `selected=1` in the `playlist_selections` table.
 
-    for playlist in apple_state.playlists:
-        # Link to existing playlist if found
-        existing = self.db.get_playlist_by_spotify_id(playlist.spotify_id)
-        if existing:
-            self.db.update_playlist(existing.id, apple_id=playlist.apple_id)
-        else:
-            self.db.upsert_playlist(playlist)
-
-    # Update liked songs
-    self.db.set_liked_songs(spotify_state.liked_songs, platform='spotify')
-    self.db.set_liked_songs(apple_state.liked_songs, platform='apple')
-
-    # Update metadata
-    self.db.set_metadata('last_sync', datetime.now().isoformat())
+**Example Result:**
+```python
+[
+    {'spotify_id': 'abc123', 'name': 'Summer Vibes', 'track_count': 45, 'selected': True},
+    {'spotify_id': 'def456', 'name': 'Workout Mix', 'track_count': 32, 'selected': True}
+]
 ```
 
 ---
 
-## Sync Result
+### Step 2: Fetch from Spotify
+
+```python
+spotify_playlists = self._fetch_spotify_playlists(playlist_ids)
+```
+
+For each selected playlist ID:
+1. Fetch playlist metadata (name, description, public status)
+2. Fetch all tracks in playlist
+3. Include ISRC codes for track matching
+
+**Playlist Object:**
+```python
+@dataclass
+class Playlist:
+    spotify_id: str
+    name: str
+    description: str
+    public: bool
+    tracks: List[Track]
+```
+
+---
+
+### Step 3: Match Tracks to Deezer
+
+```python
+deezer_track_ids = self._match_tracks_to_deezer(spotify_tracks)
+```
+
+For each Spotify track:
+1. **Check cache**: Look for existing ISRC → Deezer ID mapping in database
+2. **Search Deezer**: If not cached, search Deezer by ISRC
+3. **Cache result**: Store successful match in database
+4. **Skip if missing**: If no ISRC or not found, skip track
+
+**Caching Benefits:**
+- Reduces API calls on subsequent syncs
+- Speeds up sync for unchanged playlists
+- Tracks previously matched tracks
+
+**Example:**
+```python
+# Input: Spotify tracks
+[
+    Track(spotify_id='123', isrc='USRC12345678', title='Song A', ...),
+    Track(spotify_id='456', isrc='USRC87654321', title='Song B', ...),
+    Track(spotify_id='789', isrc=None, title='Song C', ...)  # No ISRC
+]
+
+# Output: Deezer track IDs
+['dz123456', 'dz789012']  # Song C skipped
+```
+
+---
+
+### Step 4: Apply to Deezer
+
+For each selected playlist:
+
+#### Create New Playlist
+
+```python
+if not synced:
+    deezer_id = self._create_deezer_playlist(spotify_playlist)
+```
+
+1. Create playlist on Deezer with same name/description
+2. Add matched tracks to new playlist
+3. Save Deezer playlist ID to database
+
+#### Update Existing Playlist (Full Overwrite)
+
+```python
+if synced:
+    self._update_deezer_playlist(synced['deezer_id'], spotify_playlist)
+```
+
+1. Fetch current Deezer playlist
+2. Remove ALL existing tracks
+3. Add ALL current Spotify tracks (matched to Deezer)
+4. Update database tracking
+
+**Why full overwrite?**
+- Simpler logic (no diff computation)
+- Ensures exact match with Spotify
+- Handles reordering automatically
+- No conflict resolution needed
+
+---
+
+### Step 5: Clean Deselected
+
+```python
+deleted = self._delete_deselected_playlists(selected_ids)
+```
+
+1. Query database for all synced playlists
+2. Identify playlists not in current selection
+3. Delete from Deezer via API
+4. Remove from database tracking
+
+**Example:**
+```python
+# Selected IDs: ['abc123', 'def456']
+# Synced playlists in DB: ['abc123', 'def456', 'ghi789']
+# Result: Delete 'ghi789' from Deezer
+```
+
+---
+
+### Step 6: Update Database
+
+```python
+self.db.mark_playlist_synced(spotify_id)
+self.db.add_sync_log(status='success', ...)
+```
+
+1. Update `last_synced` timestamp in `playlist_selections`
+2. Update `synced_at` in `synced_playlists`
+3. Add entry to `sync_log` table
+
+---
+
+## Result Object
 
 ```python
 @dataclass
 class SyncResult:
     success: bool
-    changes_applied: int
-    conflicts_count: int
-    conflicts_resolved: int
-    failed_changes: List[Tuple[Change, str]]  # (change, error message)
+    playlists_created: int
+    playlists_updated: int
+    playlists_deleted: int
+    failed_operations: List[Tuple[str, str]]  # (name, error)
     duration_seconds: float
 
-    def summary(self) -> str:
-        if self.success:
-            return f"✓ Sync complete: {self.changes_applied} changes applied"
-        else:
-            return f"⚠ Sync partial: {self.changes_applied} applied, {len(self.failed_changes)} failed"
+    @property
+    def total_synced(self) -> int:
+        return self.playlists_created + self.playlists_updated
+```
+
+**Example:**
+```python
+SyncResult(
+    success=True,
+    playlists_created=1,
+    playlists_updated=2,
+    playlists_deleted=0,
+    failed_operations=[],
+    duration_seconds=12.3
+)
 ```
 
 ---
 
-## Logging
+## Error Handling
 
-All syncs are logged to the database.
+### Track Matching Failures
 
 ```python
-def log_sync(self, result: SyncResult):
-    """Log sync to database."""
+for sp_track in spotify_tracks:
+    if not sp_track.isrc:
+        continue  # Skip tracks without ISRC
 
-    status = 'success' if result.success else 'partial'
+    dz_track = self.deezer.search_track(isrc=sp_track.isrc)
+    if not dz_track:
+        continue  # Skip tracks not found on Deezer
+```
 
-    details = {
-        'changes_applied': result.changes_applied,
-        'conflicts_resolved': result.conflicts_resolved,
-        'failed_changes': len(result.failed_changes)
-    }
+**Impact:** Some tracks may be missing from Deezer playlist if:
+- Track has no ISRC code
+- Track not available on Deezer
+- ISRC not indexed in Deezer search
 
-    self.db.add_sync_log(
-        status=status,
-        changes=result.changes_applied,
-        conflicts=result.conflicts_count,
-        details=json.dumps(details)
-    )
+### API Failures
+
+```python
+try:
+    self._update_deezer_playlist(deezer_id, spotify_playlist)
+    updated += 1
+except Exception as e:
+    failed.append((spotify_playlist.name, str(e)))
+    self.ui.print_error(f"Failed to sync '{spotify_playlist.name}': {e}")
+```
+
+**Behavior:**
+- Log error for failed playlist
+- Continue with next playlist
+- Return partial success status
+- Include failures in `failed_operations`
+
+### Sync Interruptions
+
+**Idempotent Operations:**
+- Safe to re-run sync if interrupted
+- Database only updated after successful API calls
+- Full overwrite means re-sync produces same result
+
+**Recovery:**
+```bash
+# If sync interrupted, simply run again
+musicdiff sync
 ```
 
 ---
 
-## Best Practices
+## Performance Optimizations
 
-1. **Idempotency**: Applying the same change twice should be safe
-2. **Rate Limiting**: Respect API limits (batch requests, add delays)
-3. **Error Recovery**: Log errors, continue with next change when possible
-4. **User Feedback**: Show progress, estimated time, clear error messages
-5. **Atomicity**: Where possible, batch related operations
-
-## Testing
+### Caching
 
 ```python
-def test_sync_auto_merge():
-    # Mock clients
-    spotify = MockSpotifyClient()
-    apple = MockAppleMusicClient()
-    db = MockDatabase()
-    ui = MockUI()
+# Check database cache first
+cached = self.db.get_track_by_isrc(isrc)
+if cached and cached['deezer_id']:
+    return cached['deezer_id']
 
-    engine = SyncEngine(spotify, apple, db, ui)
-
-    # Setup state
-    db.save_playlist(Playlist(name="Test", tracks=["A"]))
-    spotify.playlists = [Playlist(name="Test", tracks=["A", "B"])]  # Added B
-    apple.playlists = [Playlist(name="Test", tracks=["A"])]         # Unchanged
-
-    # Run sync
-    result = engine.sync(mode=SyncMode.AUTO)
-
-    # Verify
-    assert result.success
-    assert result.changes_applied == 1
-    assert "B" in apple.playlists[0].tracks
+# Only search Deezer if not cached
+dz_track = self.deezer.search_track(isrc=isrc)
 ```
+
+**Benefits:**
+- Reduced API calls
+- Faster subsequent syncs
+- Less likely to hit rate limits
+
+### Batch Operations
+
+```python
+# Add all tracks in one API call
+track_ids = [t1, t2, t3, t4, t5]
+self.deezer.add_tracks_to_playlist(playlist_id, track_ids)
+
+# Instead of:
+# for track_id in track_ids:
+#     self.deezer.add_tracks_to_playlist(playlist_id, [track_id])
+```
+
+**Benefits:**
+- Fewer API calls
+- Faster sync
+- Better rate limit management
+
+---
+
+## Future Enhancements
+
+### Incremental Updates
+
+Instead of full overwrite, compute diff:
+- Only add new tracks
+- Only remove deleted tracks
+- Preserve manual additions on Deezer (if desired)
+
+### Fuzzy Matching
+
+Fallback for tracks without ISRC:
+- Match by title + artist + album
+- Use Levenshtein distance for typos
+- Manual confirmation for uncertain matches
+
+### Parallel Syncing
+
+Process multiple playlists concurrently:
+- Thread pool for API calls
+- Faster overall sync time
+- Respect rate limits
+
+### Automatic Scheduling
+
+Daemon mode for continuous sync:
+- Run sync on interval (e.g., every 6 hours)
+- Detect changes and auto-sync
+- Background process with logging

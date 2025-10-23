@@ -2,394 +2,427 @@
 
 ## Overview
 
-The UI module (`ui.py`) provides terminal-based user interface components using the `rich` library for beautiful, interactive CLI experiences.
+The UI module (`ui.py`) provides terminal-based user interface components using the `rich` and `prompt_toolkit` libraries for a clean, interactive CLI experience focused on playlist selection and sync status.
 
 ## Dependencies
 
-- **rich**: Terminal formatting, tables, progress bars
-- **prompt_toolkit**: Interactive prompts and text input
+- **rich**: Terminal formatting, tables, progress bars, panels
+- **prompt_toolkit**: Interactive checkbox selection dialog
+
+## Class: `UI`
+
+```python
+class UI:
+    def __init__(self)
+    def select_playlists(self, playlists: List[Dict], current_selections: Dict[str, bool]) -> Dict[str, bool]
+    def show_playlist_list(self, playlists: List[Dict], synced_playlists: Dict[str, Dict])
+    def show_sync_preview(self, to_create: List[str], to_update: List[str], to_delete: List[str])
+    def create_progress(self, description: str) -> Progress
+    def confirm(self, message: str, default: bool = False) -> bool
+    def print_success(self, message: str)
+    def print_error(self, message: str)
+    def print_warning(self, message: str)
+    def print_info(self, message: str)
+    def show_status(self, title: str, items: dict)
+    def show_sync_summary(self, result: SyncResult)
+```
 
 ## Core Components
 
-### 1. Diff Viewer
+### 1. Playlist Selection
 
-Side-by-side comparison of changes.
+Interactive checkbox interface for selecting playlists to sync.
 
 ```python
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
+def select_playlists(self, playlists: List[Dict], current_selections: Dict[str, bool]) -> Dict[str, bool]:
+    """Interactive playlist selection with checkboxes.
 
-class DiffViewer:
-    def __init__(self):
-        self.console = Console()
+    Args:
+        playlists: List of playlist dicts with spotify_id, name, track_count
+        current_selections: Dict mapping spotify_id -> selected (bool)
 
-    def show_playlist_diff(self, conflict: Conflict):
-        """Display playlist conflict with side-by-side diff."""
+    Returns:
+        Dict mapping spotify_id -> selected (bool)
+    """
+    # Show checkbox dialog
+    result = checkboxlist_dialog(
+        title="Select Playlists",
+        text="Choose which Spotify playlists to sync to Deezer:",
+        values=[(spotify_id, f"{name} ({track_count} tracks)") for ...],
+        default_values=[spotify_id for spotify_id in currently_selected]
+    ).run()
+```
 
-        spotify_playlist = conflict.spotify_change.data
-        apple_playlist = conflict.apple_change.data
+**Example Interface:**
+```
+┌─ Select Playlists ─────────────────────────────────────┐
+│ Choose which Spotify playlists to sync to Deezer:     │
+│                                                         │
+│ ☑ Summer Vibes 2025 (45 tracks)                       │
+│ ☑ Workout Mix (32 tracks)                             │
+│ ☐ Chill Evening (28 tracks)                           │
+│ ☑ Party Hits (67 tracks)                              │
+│ ☐ Study Focus (41 tracks)                             │
+│                                                         │
+│         [ OK ]              [ Cancel ]                  │
+└─────────────────────────────────────────────────────────┘
+```
 
-        # Create comparison table
-        table = Table(title=f"Conflict: {conflict.entity_id}", show_header=True)
-        table.add_column("", style="bold")
-        table.add_column("Spotify", style="cyan")
-        table.add_column("Apple Music", style="magenta")
+**Fallback Text Mode:**
 
-        # Compare metadata
-        table.add_row(
-            "Name",
-            spotify_playlist.get('name', ''),
-            apple_playlist.get('name', '')
-        )
+If checkbox dialog fails (e.g., terminal doesn't support it), falls back to simple text-based selection:
 
-        # Compare tracks
-        spotify_tracks = spotify_playlist.get('tracks', [])
-        apple_tracks = apple_playlist.get('tracks', [])
-
-        max_tracks = max(len(spotify_tracks), len(apple_tracks))
-
-        for i in range(max_tracks):
-            spotify_track = spotify_tracks[i] if i < len(spotify_tracks) else ""
-            apple_track = apple_tracks[i] if i < len(apple_tracks) else ""
-
-            # Highlight differences
-            style_spotify = "green" if spotify_track and spotify_track not in apple_tracks else "red"
-            style_apple = "green" if apple_track and apple_track not in spotify_tracks else "red"
-
-            table.add_row(
-                f"Track {i+1}",
-                f"[{style_spotify}]{spotify_track}[/{style_spotify}]",
-                f"[{style_apple}]{apple_track}[/{style_apple}]"
-            )
-
-        self.console.print(table)
+```python
+def _text_based_selection(self, playlists: List[Dict], current_selections: Dict[str, bool]) -> Dict[str, bool]:
+    """Fallback text-based playlist selection."""
+    # Display numbered list
+    # Prompt for comma-separated numbers to toggle
+    # Return updated selections
 ```
 
 **Example Output:**
 ```
-╭────────── Conflict: Workout Mix ──────────╮
-│                                           │
-│           Spotify    │   Apple Music      │
-│ Name    Workout Mix  │  Workout Mix       │
-│ Track 1 Eye of Tiger │  Eye of Tiger      │
-│ Track 2 Lose Yourself│  Stronger          │
-│ Track 3 Till I Coll… │  Remember the Name │
-╰───────────────────────────────────────────╯
+Using simplified selection mode
+
+1. ✓ Summer Vibes 2025 (45 tracks)
+2. ✓ Workout Mix (32 tracks)
+3. ✗ Chill Evening (28 tracks)
+4. ✓ Party Hits (67 tracks)
+5. ✗ Study Focus (41 tracks)
+
+Enter playlist numbers to toggle (comma-separated), or 'done' to finish:
+Toggle playlists [done]: 3,5
 ```
 
 ---
 
-### 2. Progress Bars
+### 2. Playlist List View
 
-Show progress for long-running operations.
+Display all playlists with sync status.
 
 ```python
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
-
-class ProgressDisplay:
-    def __init__(self):
-        self.progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=Console()
-        )
-
-    def sync_with_progress(self, changes: List[Change]):
-        """Apply changes with progress bar."""
-
-        with self.progress:
-            task = self.progress.add_task("Syncing...", total=len(changes))
-
-            for change in changes:
-                self.progress.update(task, description=f"Applying {change.change_type.value}...")
-                self.apply_change(change)
-                self.progress.advance(task)
+def show_playlist_list(self, playlists: List[Dict], synced_playlists: Dict[str, Dict]):
+    """Show list of all playlists with sync status."""
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Status", width=8)
+    table.add_column("Playlist Name", style="white")
+    table.add_column("Tracks", justify="right", width=10)
+    table.add_column("Last Synced", width=20)
+    table.add_column("Deezer", width=10)
 ```
 
 **Example Output:**
 ```
-⠋ Applying playlist_updated... ━━━━━━━━━━━━━━━━━━╺━━ 75% 45/60
+Your Spotify Playlists
+
+┌──────────────┬─────────────────────┬────────┬──────────────────┬────────────┐
+│ Status       │ Playlist Name       │ Tracks │ Last Synced      │ Deezer     │
+├──────────────┼─────────────────────┼────────┼──────────────────┼────────────┤
+│ ✓ Selected   │ Summer Vibes 2025   │     45 │ 2025-10-22 13:30 │ ✓ Synced   │
+│ ✓ Selected   │ Workout Mix         │     32 │ 2025-10-22 13:30 │ ✓ Synced   │
+│ ○ Not sel... │ Chill Evening       │     28 │ Never            │ —          │
+│ ✓ Selected   │ Party Hits          │     67 │ 2025-10-22 13:30 │ ✓ Synced   │
+│ ○ Not sel... │ Study Focus         │     41 │ Never            │ —          │
+└──────────────┴─────────────────────┴────────┴──────────────────┴────────────┘
+
+Summary: 3/5 selected, 3 synced to Deezer
 ```
 
 ---
 
-### 3. Interactive Prompts
+### 3. Sync Preview
 
-Get user input for conflict resolution.
-
-```python
-from prompt_toolkit import prompt
-from prompt_toolkit.shortcuts import radiolist_dialog
-
-class InteractiveUI:
-    def prompt_resolution(self, conflict: Conflict) -> str:
-        """Prompt user to choose conflict resolution."""
-
-        result = radiolist_dialog(
-            title=f"Resolve Conflict: {conflict.entity_id}",
-            text="Choose how to resolve this conflict:",
-            values=[
-                ('spotify', 'Keep Spotify version'),
-                ('apple', 'Keep Apple Music version'),
-                ('manual', 'Manual merge (interactive)'),
-                ('skip', 'Skip for now')
-            ]
-        ).run()
-
-        return result or 'skip'
-
-    def confirm_changes(self, changes: List[Change]) -> bool:
-        """Ask user to confirm before applying changes."""
-
-        self.show_change_summary(changes)
-
-        response = prompt("Apply these changes? (y/n): ").lower()
-        return response in ['y', 'yes']
-```
-
----
-
-### 4. Change Summary
-
-Display summary of pending changes.
+Show what will be synced in dry-run mode.
 
 ```python
-from rich.tree import Tree
-
-class ChangeSummary:
-    def __init__(self):
-        self.console = Console()
-
-    def show(self, diff_result: DiffResult):
-        """Show tree view of changes."""
-
-        tree = Tree("📊 Sync Summary")
-
-        # Auto-merge changes
-        if diff_result.auto_merge:
-            auto_branch = tree.add(f"✓ Auto-merge ({len(diff_result.auto_merge)} changes)", style="green")
-
-            # Group by type
-            by_type = {}
-            for change in diff_result.auto_merge:
-                type_name = change.change_type.value
-                if type_name not in by_type:
-                    by_type[type_name] = []
-                by_type[type_name].append(change)
-
-            for type_name, changes in by_type.items():
-                type_branch = auto_branch.add(f"{type_name} ({len(changes)})")
-                for change in changes[:5]:  # Show first 5
-                    type_branch.add(f"→ {change.entity_id}", style="dim")
-                if len(changes) > 5:
-                    type_branch.add(f"... and {len(changes) - 5} more", style="dim italic")
-
-        # Conflicts
-        if diff_result.conflicts:
-            conflict_branch = tree.add(f"⚠ Conflicts ({len(diff_result.conflicts)})", style="red")
-            for conflict in diff_result.conflicts:
-                conflict_branch.add(f"→ {conflict.entity_id}", style="dim")
-
-        self.console.print(tree)
+def show_sync_preview(self, to_create: List[str], to_update: List[str], to_delete: List[str]):
+    """Show preview of what will be synced."""
 ```
 
 **Example Output:**
 ```
-📊 Sync Summary
-├── ✓ Auto-merge (62 changes)
-│   ├── playlist_updated (5)
-│   │   ├── → Chill Mix
-│   │   ├── → Party Hits
-│   │   └── ... and 3 more
-│   └── liked_song_added (57)
-│       ├── → Track A
-│       └── ... and 56 more
-└── ⚠ Conflicts (1)
-    └── → Workout Mix
+Sync Preview:
+
+Create on Deezer (1):
+  + Summer Vibes 2025
+
+Update on Deezer (2):
+  ~ Workout Mix
+  ~ Party Hits
+
+Delete from Deezer (0):
+  (none)
 ```
 
 ---
 
-### 5. Manual Merge UI
+### 4. Progress Bars
 
-Interactive track-by-track merge interface.
-
-```python
-from prompt_toolkit.shortcuts import checkboxlist_dialog
-
-class ManualMergeUI:
-    def merge_playlist_tracks(self, spotify_tracks: List[str], apple_tracks: List[str]) -> List[str]:
-        """Let user select tracks for merged playlist."""
-
-        # Combine all unique tracks
-        all_tracks = list(set(spotify_tracks + apple_tracks))
-
-        # Pre-select tracks that appear on both platforms
-        defaults = [t for t in all_tracks if t in spotify_tracks and t in apple_tracks]
-
-        result = checkboxlist_dialog(
-            title="Manual Merge: Select Tracks",
-            text="Select tracks to include in the merged playlist:",
-            values=[(track, f"{track} {'[S+A]' if track in defaults else '[S]' if track in spotify_tracks else '[A]'}")
-                    for track in all_tracks],
-            default_values=defaults
-        ).run()
-
-        return result or []
-```
-
-**Example UI:**
-```
-┌── Manual Merge: Select Tracks ────────────┐
-│ Select tracks to include:                 │
-│                                            │
-│ [x] Eye of the Tiger [S+A]                │
-│ [x] Lose Yourself [S]                     │
-│ [ ] Stronger [A]                          │
-│ [x] Till I Collapse [S]                   │
-│ [ ] Remember the Name [A]                 │
-│                                            │
-│          [OK]        [Cancel]             │
-└────────────────────────────────────────────┘
-```
-
----
-
-## Styling
-
-### Color Scheme
+Progress tracking for long-running operations.
 
 ```python
-# Platform colors
-SPOTIFY_COLOR = "cyan"
-APPLE_COLOR = "magenta"
-
-# Status colors
-SUCCESS_COLOR = "green"
-WARNING_COLOR = "yellow"
-ERROR_COLOR = "red"
-CONFLICT_COLOR = "red bold"
-
-# Text styles
-HEADER_STYLE = "bold underline"
-DIM_STYLE = "dim"
-```
-
-### Icons
-
-```python
-ICONS = {
-    'success': '✓',
-    'error': '✗',
-    'warning': '⚠',
-    'info': 'ℹ',
-    'music': '🎵',
-    'sync': '🔄',
-    'conflict': '⚡',
-    'spotify': '🟢',
-    'apple': '🍎'
-}
-```
-
----
-
-## Error Display
-
-```python
-from rich.panel import Panel
-
-class ErrorDisplay:
-    def __init__(self):
-        self.console = Console()
-
-    def show_error(self, error: Exception, context: str = ""):
-        """Display error in formatted panel."""
-
-        error_panel = Panel(
-            f"[red bold]Error:[/red bold] {str(error)}\n\n"
-            f"[dim]Context: {context}[/dim]",
-            title="❌ Error",
-            border_style="red"
-        )
-
-        self.console.print(error_panel)
-
-    def show_api_error(self, platform: str, error: Exception):
-        """Display API-specific error."""
-
-        self.console.print(f"\n[red]API Error ({platform}):[/red]")
-        self.console.print(f"  {str(error)}")
-
-        if hasattr(error, 'http_status'):
-            self.console.print(f"  HTTP Status: {error.http_status}")
-
-        self.console.print("\n[yellow]Suggestions:[/yellow]")
-
-        if platform == "spotify":
-            self.console.print("  • Check Spotify API credentials")
-            self.console.print("  • Verify token hasn't expired")
-        elif platform == "apple":
-            self.console.print("  • Check Apple Music developer token")
-            self.console.print("  • Verify user token is valid")
-```
-
----
-
-## Logging
-
-Display logs with proper formatting.
-
-```python
-from rich.logging import RichHandler
-import logging
-
-# Setup rich logging
-logging.basicConfig(
-    level="INFO",
-    format="%(message)s",
-    datefmt="[%X]",
-    handlers=[RichHandler(rich_tracebacks=True)]
-)
-
-logger = logging.getLogger("musicdiff")
+def create_progress(self, description: str) -> Progress:
+    """Create and return a progress bar."""
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=self.console
+    )
 ```
 
 **Usage:**
 ```python
-logger.info("Starting sync...")
-logger.warning("Conflict detected")
-logger.error("Failed to apply change", exc_info=True)
+with ui.create_progress("Syncing playlists") as progress:
+    task = progress.add_task("Processing...", total=len(playlists))
+
+    for playlist in playlists:
+        # Sync playlist
+        progress.update(task, advance=1)
+```
+
+**Example Output:**
+```
+⠋ Syncing playlists  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  60% 3/5
 ```
 
 ---
 
-## Testing
+### 5. Status Messages
 
-Mock UI for automated testing.
+Colored status messages for feedback.
 
 ```python
-class MockUI:
-    def __init__(self):
-        self.prompts = []
-        self.resolutions = {}
+def print_success(self, message: str):
+    """Print a success message."""
+    self.console.print(f"[green]✓ {message}[/green]")
 
-    def set_resolution(self, conflict_id: str, resolution: str):
-        """Pre-set resolution for testing."""
-        self.resolutions[conflict_id] = resolution
+def print_error(self, message: str):
+    """Print an error message."""
+    self.console.print(f"[red]✗ {message}[/red]")
 
-    def prompt_resolution(self, conflict: Conflict) -> str:
-        """Return pre-set resolution."""
-        return self.resolutions.get(conflict.entity_id, 'skip')
+def print_warning(self, message: str):
+    """Print a warning message."""
+    self.console.print(f"[yellow]⚠ {message}[/yellow]")
 
-    def show_conflict(self, conflict: Conflict):
-        """No-op for testing."""
-        pass
+def print_info(self, message: str):
+    """Print an info message."""
+    self.console.print(f"[blue]ℹ {message}[/blue]")
 ```
 
-## References
+**Example Output:**
+```
+✓ Playlist synced successfully
+✗ Failed to sync playlist: API error
+⚠ Some tracks could not be matched
+ℹ Syncing 3 selected playlists to Deezer...
+```
 
-- [Rich Documentation](https://rich.readthedocs.io/)
-- [Prompt Toolkit](https://python-prompt-toolkit.readthedocs.io/)
+---
+
+### 6. Confirmation Prompts
+
+Yes/no confirmation using rich.
+
+```python
+def confirm(self, message: str, default: bool = False) -> bool:
+    """Ask user for yes/no confirmation."""
+    return Confirm.ask(message, default=default)
+```
+
+**Example:**
+```python
+if ui.confirm("Delete this playlist from Deezer?", default=False):
+    deezer_client.delete_playlist(playlist_id)
+```
+
+**Example Output:**
+```
+Delete this playlist from Deezer? [y/N]: y
+```
+
+---
+
+### 7. Status Tables
+
+Generic key-value status display.
+
+```python
+def show_status(self, title: str, items: dict):
+    """Show status information in a table."""
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Key", style="cyan")
+    table.add_column("Value")
+
+    for key, value in items.items():
+        table.add_row(key, str(value))
+```
+
+**Example:**
+```python
+ui.show_status("Database Status", {
+    "Path": db.db_path,
+    "Size": "2.3 MB",
+    "Selected Playlists": 3,
+    "Synced Playlists": 3
+})
+```
+
+**Example Output:**
+```
+Database Status
+
+Path              ~/.musicdiff/musicdiff.db
+Size              2.3 MB
+Selected Playlists  3
+Synced Playlists    3
+```
+
+---
+
+### 8. Sync Summary
+
+Display summary after sync completes.
+
+```python
+def show_sync_summary(self, result: SyncResult):
+    """Show summary after sync completes."""
+    self.console.rule("[bold cyan]Sync Summary[/bold cyan]")
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Metric", style="bold")
+    table.add_column("Count")
+
+    table.add_row("Playlists Created", f"[green]{result.playlists_created}[/green]")
+    table.add_row("Playlists Updated", f"[yellow]{result.playlists_updated}[/yellow]")
+    table.add_row("Playlists Deleted", f"[red]{result.playlists_deleted}[/red]")
+    table.add_row("Total Synced", f"[cyan]{result.total_synced}[/cyan]")
+    table.add_row("Duration", f"{result.duration_seconds:.1f}s")
+```
+
+**Example Output:**
+```
+━━━━━━━━━━━━━━━━━━━━━━ Sync Summary ━━━━━━━━━━━━━━━━━━━━━━
+
+Playlists Created     1
+Playlists Updated     2
+Playlists Deleted     0
+Total Synced          3
+Duration              12.3s
+```
+
+---
+
+## Design Principles
+
+### Color Coding
+
+Consistent color scheme across all components:
+- **Green**: Success, created, selected
+- **Yellow**: Warning, updated
+- **Red**: Error, deleted, deselected
+- **Blue**: Info, progress
+- **Cyan**: Headers, labels
+- **Dim**: Disabled, not selected
+
+### Icons
+
+Consistent icons for status:
+- `✓`: Success, enabled, synced
+- `✗`: Error, failed
+- `⚠`: Warning
+- `ℹ`: Info
+- `○`: Not selected
+- `~`: Updated
+- `+`: Created
+- `-`: Deleted
+
+### Responsive Layout
+
+Tables automatically adjust to terminal width:
+- Column widths specified where needed
+- Text truncation for long names
+- Horizontal scrolling avoided
+
+### Accessibility
+
+- Clear text labels, not just colors
+- Icons supplement color coding
+- Keyboard-only navigation
+- Screen reader friendly (rich's native support)
+
+## Error Handling
+
+### Checkbox Dialog Failure
+
+If `checkboxlist_dialog` fails (unsupported terminal):
+
+```python
+try:
+    result = checkboxlist_dialog(...).run()
+except Exception as e:
+    self.print_error(f"Selection failed: {e}")
+    return self._text_based_selection(playlists, current_selections)
+```
+
+Gracefully falls back to text-based selection.
+
+### Console Rendering Issues
+
+If rich rendering fails (very rare):
+- Falls back to plain print statements
+- Still functional, just less pretty
+- Logged for debugging
+
+## Usage Examples
+
+### Complete Selection Flow
+
+```python
+ui = UI()
+
+# Get playlists from Spotify
+sp_playlists = spotify.fetch_playlists()
+
+# Get current selections from database
+current_selections = {p['spotify_id']: p.get('selected', False) for p in db.get_all_playlist_selections()}
+
+# Show selection interface
+new_selections = ui.select_playlists(sp_playlists, current_selections)
+
+# Save to database
+for spotify_id, selected in new_selections.items():
+    db.update_playlist_selection(spotify_id, selected)
+
+ui.print_success(f"Updated playlist selections ({sum(new_selections.values())} selected)")
+```
+
+### Complete Sync with Progress
+
+```python
+ui = UI()
+
+selected_playlists = db.get_selected_playlists()
+ui.print_info(f"Syncing {len(selected_playlists)} playlists to Deezer...")
+
+with ui.create_progress("Syncing playlists") as progress:
+    task = progress.add_task("Processing...", total=len(selected_playlists))
+
+    for playlist in selected_playlists:
+        try:
+            sync_playlist(playlist)
+            progress.update(task, advance=1)
+        except Exception as e:
+            ui.print_error(f"Failed to sync '{playlist['name']}': {e}")
+
+ui.print_success("Sync complete!")
+```
+
+## Future Enhancements
+
+- **Playlist Details View**: Expand playlist to show all tracks
+- **Track Match Status**: Visualize which tracks matched/skipped
+- **Live Sync Progress**: Real-time track-by-track progress
+- **Color Themes**: Customizable color schemes
+- **Terminal Recording**: Export session as GIF for demos
