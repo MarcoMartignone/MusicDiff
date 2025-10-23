@@ -48,11 +48,8 @@ class UI:
             self.console.print(f"[bold green]✓ You currently have {selected_count} playlists selected:[/bold green]\n")
 
             selected_playlists = [p for p in playlists if current_selections.get(p.get('spotify_id') or p.get('id'), False)]
-            for playlist in selected_playlists[:10]:
+            for playlist in selected_playlists:
                 self.console.print(f"  [green]●[/green] {playlist['name']} [dim]({playlist.get('track_count', 0)} tracks)[/dim]")
-
-            if len(selected_playlists) > 10:
-                self.console.print(f"  [dim]... and {len(selected_playlists) - 10} more[/dim]")
 
             self.console.print()
 
