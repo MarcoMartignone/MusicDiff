@@ -82,14 +82,22 @@ class UI:
 
         # Show checkbox selection
         try:
+            # Only pass default if there are pre-selected items
+            checkbox_kwargs = {
+                "choices": choices,
+                "style": custom_style,
+                "use_indicator": True,
+                "use_shortcuts": False,
+                "instruction": "(Use arrow keys to move, SPACE to select, ENTER to confirm)"
+            }
+
+            # Only add default if there are selected items
+            if default_selected:
+                checkbox_kwargs["default"] = default_selected
+
             selected = questionary.checkbox(
                 "Select playlists to sync:",
-                choices=choices,
-                default=default_selected,
-                style=custom_style,
-                use_indicator=True,
-                use_shortcuts=False,
-                instruction="(Use arrow keys to move, SPACE to select, ENTER to confirm)"
+                **checkbox_kwargs
             ).ask()
 
             if selected is None:
