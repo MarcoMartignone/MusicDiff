@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "musicdiff"
 version = "0.1.0"
-description = "Git-like bidirectional sync for Spotify and Apple Music libraries"
+description = "One-way sync tool to transfer Spotify playlists to Deezer"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
@@ -28,10 +28,11 @@ classifiers = [
 dependencies = [
     "click>=8.1.0",
     "spotipy>=2.23.0",
+    "deezer-python>=7.0.0",
     "requests>=2.31.0",
     "rich>=13.0.0",
     "prompt-toolkit>=3.0.0",
-    "pyjwt>=2.8.0",
+    "python-dotenv>=1.0.0",
     "pyyaml>=6.0",
     "rapidfuzz>=3.0.0",
     "apscheduler>=3.10.0",

@@ -11,6 +11,7 @@ import time
 import webbrowser
 import shutil
 from pathlib import Path
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
@@ -33,6 +34,17 @@ def get_config_dir() -> Path:
     config_dir = Path.home() / 'Documents' / 'MusicDiff' / '.musicdiff'
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir
+
+
+def load_env_file():
+    """Load environment variables from .env file if it exists."""
+    env_file = get_config_dir() / '.env'
+    if env_file.exists():
+        load_dotenv(env_file)
+
+
+# Auto-load environment variables when CLI module is imported
+load_env_file()
 
 
 def get_database() -> Database:
