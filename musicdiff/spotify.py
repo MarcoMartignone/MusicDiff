@@ -112,6 +112,42 @@ class SpotifyClient:
             print(f"Authentication failed: {e}")
             return False
 
+    def fetch_playlists_metadata(self) -> List[Dict]:
+        """Fetch playlist metadata only (no track data) - fast!
+
+        Returns list of dicts with: spotify_id, name, track_count
+        Use this for displaying playlists when you don't need track details.
+
+        Returns:
+            List of playlist metadata dicts
+        """
+        if not self.sp:
+            raise RuntimeError("Not authenticated. Call authenticate() first.")
+
+        playlists = []
+        offset = 0
+        limit = 50
+
+        while True:
+            results = self._api_call_with_retry(
+                self.sp.current_user_playlists,
+                limit=limit,
+                offset=offset
+            )
+
+            for item in results['items']:
+                playlists.append({
+                    'spotify_id': item['id'],
+                    'name': item['name'],
+                    'track_count': item['tracks']['total']
+                })
+
+            if not results['next']:
+                break
+            offset += limit
+
+        return playlists
+
     def fetch_playlists(self, progress_callback=None) -> List[Playlist]:
         """Fetch all user playlists with full track data.
 

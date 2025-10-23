@@ -663,8 +663,8 @@ def select():
     spotify = get_spotify_client()
     ui = UI()
 
-    # Fetch all Spotify playlists with progress
-    sp_playlists = None
+    # Fetch playlist metadata only (fast! no track data)
+    playlist_dicts = None
 
     console.print()
 
@@ -672,24 +672,16 @@ def select():
         with Progress(
             SpinnerColumn(),
             TextColumn("[bold cyan]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
             console=console
         ) as progress:
-            task = progress.add_task("🎵 Fetching your Spotify playlists...", total=1)
+            task = progress.add_task("🎵 Fetching your Spotify playlists...", total=None)
 
-            def update_progress(current, total, name):
-                # Truncate long playlist names
-                display_name = name[:35] + "..." if len(name) > 35 else name
-                progress.update(
-                    task,
-                    description=f"🎵 [{current}/{total}] [dim]{display_name}[/dim]",
-                    total=total,
-                    completed=current
-                )
+            # Fast fetch - just metadata, no tracks!
+            playlist_dicts = spotify.fetch_playlists_metadata()
 
-            sp_playlists = spotify.fetch_playlists(progress_callback=update_progress)
-            progress.update(task, description="[green]✓ All playlists loaded![/green]", completed=True)
+            progress.update(task, description="[green]✓ Playlists loaded![/green]")
+            import time
+            time.sleep(0.2)
 
         console.print()
     except Exception as e:
@@ -700,13 +692,13 @@ def select():
             traceback.print_exc()
         sys.exit(1)
 
-    if not sp_playlists:
+    if not playlist_dicts:
         console.print("[yellow]⚠ No Spotify playlists found[/yellow]")
         console.print("[dim]Create some playlists on Spotify first![/dim]")
         return
 
     # Show count with fun message
-    count = len(sp_playlists)
+    count = len(playlist_dicts)
     if count == 1:
         console.print(f"[cyan]Found {count} playlist! 🎵[/cyan]")
     elif count < 10:
@@ -716,15 +708,6 @@ def select():
     else:
         console.print(f"[cyan]Holy moly! {count} playlists! You're a music legend! 🎹🎺🎻[/cyan]")
     console.print()
-
-    # Convert to simple dicts
-    playlist_dicts = []
-    for p in sp_playlists:
-        playlist_dicts.append({
-            'spotify_id': p.spotify_id,
-            'name': p.name,
-            'track_count': len(p.tracks)
-        })
 
     # Get current selections from database
     current_selections_list = db.get_all_playlist_selections()
