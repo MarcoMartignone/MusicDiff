@@ -112,8 +112,11 @@ class SpotifyClient:
             print(f"Authentication failed: {e}")
             return False
 
-    def fetch_playlists(self) -> List[Playlist]:
+    def fetch_playlists(self, progress_callback=None) -> List[Playlist]:
         """Fetch all user playlists with full track data.
+
+        Args:
+            progress_callback: Optional callback function(current, total, playlist_name)
 
         Returns:
             List of Playlist objects
@@ -125,6 +128,16 @@ class SpotifyClient:
         offset = 0
         limit = 50
 
+        # First, get total count
+        first_results = self._api_call_with_retry(
+            self.sp.current_user_playlists,
+            limit=1
+        )
+        total_playlists = first_results['total']
+
+        current_playlist = 0
+        offset = 0
+
         while True:
             results = self._api_call_with_retry(
                 self.sp.current_user_playlists,
@@ -133,6 +146,11 @@ class SpotifyClient:
             )
 
             for item in results['items']:
+                current_playlist += 1
+
+                if progress_callback:
+                    progress_callback(current_playlist, total_playlists, item['name'])
+
                 # Fetch full playlist with tracks
                 playlist_data = self._api_call_with_retry(
                     self.sp.playlist,

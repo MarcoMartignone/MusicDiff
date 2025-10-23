@@ -14,7 +14,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
 # Import all modules
 from musicdiff.database import Database
@@ -663,17 +663,41 @@ def select():
     spotify = get_spotify_client()
     ui = UI()
 
-    # Fetch all Spotify playlists
+    # Fetch all Spotify playlists with progress
     sp_playlists = None
 
     console.print()
-    console.print("🎵 Fetching your Spotify playlists...")
 
     try:
-        sp_playlists = spotify.fetch_playlists()
-        console.print("[green]✓ Playlists loaded![/green]\n")
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold cyan]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console
+        ) as progress:
+            task = progress.add_task("🎵 Fetching your Spotify playlists...", total=1)
+
+            def update_progress(current, total, name):
+                # Truncate long playlist names
+                display_name = name[:35] + "..." if len(name) > 35 else name
+                progress.update(
+                    task,
+                    description=f"🎵 [{current}/{total}] [dim]{display_name}[/dim]",
+                    total=total,
+                    completed=current
+                )
+
+            sp_playlists = spotify.fetch_playlists(progress_callback=update_progress)
+            progress.update(task, description="[green]✓ All playlists loaded![/green]", completed=True)
+
+        console.print()
     except Exception as e:
         console.print(f"[red]✗ Failed to fetch playlists: {e}[/red]")
+        console.print("[dim]Tip: Make sure you've loaded credentials with 'source .musicdiff/.env'[/dim]")
+        import traceback
+        if os.environ.get('MUSICDIFF_DEBUG'):
+            traceback.print_exc()
         sys.exit(1)
 
     if not sp_playlists:
