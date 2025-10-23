@@ -394,22 +394,35 @@ class DeezerClient:
             print(f"  Status: {response.status_code}")
             print(f"  Body: {response.text[:500]}")
 
-        response_data = response.json()
-
-        if self.debug:
-            print(f"  Parsed: {response_data}")
-
-        # Check for errors - empty array or dict means success
-        error = response_data.get('error')
-        if error and (isinstance(error, dict) or (isinstance(error, list) and len(error) > 0)):
+        # Handle empty response (which means success for this endpoint)
+        if not response.text or response.text.strip() == '':
             if self.debug:
-                print(f"  Error: {error}")
-            return False
+                print(f"  ✓ Tracks added successfully (empty response = success)")
+            return True
 
-        if self.debug:
-            print(f"  ✓ Tracks added successfully")
+        try:
+            response_data = response.json()
 
-        return True
+            if self.debug:
+                print(f"  Parsed: {response_data}")
+
+            # Check for errors - empty array or dict means success
+            error = response_data.get('error')
+            if error and (isinstance(error, dict) or (isinstance(error, list) and len(error) > 0)):
+                if self.debug:
+                    print(f"  Error: {error}")
+                return False
+
+            if self.debug:
+                print(f"  ✓ Tracks added successfully")
+
+            return True
+        except Exception as e:
+            if self.debug:
+                print(f"  JSON parse error: {e}")
+                print(f"  Assuming success based on HTTP {response.status_code}")
+            # If we got HTTP 200 but can't parse JSON, assume success
+            return response.status_code == 200
 
     def remove_tracks_from_playlist(self, playlist_id: str, track_ids: List[str]) -> bool:
         """Remove tracks from a playlist.
