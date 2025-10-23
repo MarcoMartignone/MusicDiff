@@ -51,18 +51,22 @@ class UI:
         # Prepare choices for questionary
         choices = []
         default_selected = []
+        valid_spotify_ids = set()
 
         for playlist in playlists:
             spotify_id = playlist.get('spotify_id') or playlist.get('id')
             name = playlist['name']
             track_count = playlist.get('track_count', 0)
 
+            # Track valid spotify IDs
+            valid_spotify_ids.add(spotify_id)
+
             # Create choice with name and track count
             choice_text = f"{name} ({track_count} tracks)"
             choice = questionary.Choice(title=choice_text, value=spotify_id)
             choices.append(choice)
 
-            # Mark as default if currently selected
+            # Mark as default if currently selected AND still exists in Spotify
             if current_selections.get(spotify_id, False):
                 default_selected.append(spotify_id)
 
@@ -82,16 +86,19 @@ class UI:
 
         # Show checkbox selection
         try:
-            # Only pass default if there are pre-selected items
+            # Filter defaults to only include playlists that still exist on Spotify
+            valid_defaults = [sid for sid in default_selected if sid in valid_spotify_ids]
+
+            # Only pass default if there are pre-selected items that are valid
             checkbox_kwargs = {
                 "choices": choices,
                 "style": custom_style,
                 "instruction": "(Use arrow keys to move, SPACE to select, ENTER to confirm)"
             }
 
-            # Only add default if there are selected items
-            if default_selected:
-                checkbox_kwargs["default"] = default_selected
+            # Only add default if there are valid selected items
+            if valid_defaults:
+                checkbox_kwargs["default"] = valid_defaults
 
             selected = questionary.checkbox(
                 "Select playlists to sync:",
