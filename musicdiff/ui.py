@@ -9,8 +9,9 @@ from rich.table import Table
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
-from prompt_toolkit import prompt
-from prompt_toolkit.shortcuts import checkboxlist_dialog
+from rich.columns import Columns
+from rich.text import Text
+from rich.tree import Tree
 from typing import List, Dict, Tuple
 from datetime import datetime
 
@@ -23,7 +24,7 @@ class UI:
         self.console = Console()
 
     def select_playlists(self, playlists: List[Dict], current_selections: Dict[str, bool]) -> Dict[str, bool]:
-        """Interactive playlist selection with checkboxes.
+        """Modern, Claude Code-style playlist selection interface.
 
         Args:
             playlists: List of playlist dicts with spotify_id, name, track_count
@@ -36,54 +37,85 @@ class UI:
             self.print_warning("No Spotify playlists found.")
             return {}
 
-        self.console.print("\n[bold cyan]Select Playlists to Sync to Deezer[/bold cyan]\n")
-        self.console.print("Use [cyan]↑↓[/cyan] to navigate, [cyan]SPACE[/cyan] to select/deselect, [cyan]ENTER[/cyan] to confirm\n")
+        # Display header
+        self.console.print()
+        self.console.print(Panel.fit(
+            "[bold cyan]🎵 Select Playlists to Sync[/bold cyan]\n\n"
+            "Choose which Spotify playlists you want to sync to Deezer",
+            border_style="cyan"
+        ))
+        self.console.print()
 
-        # Create checkbox list
-        values = []
+        # Start with current selections
+        new_selections = current_selections.copy()
+
+        # Group playlists for better display
+        selected_playlists = []
+        unselected_playlists = []
+
         for playlist in playlists:
             spotify_id = playlist.get('spotify_id') or playlist.get('id')
-            name = playlist['name']
-            track_count = playlist.get('track_count', 0)
-
-            # Check if currently selected
             is_selected = current_selections.get(spotify_id, False)
 
-            values.append((
-                spotify_id,
-                f"{name} ({track_count} tracks)",
-                is_selected
-            ))
+            if is_selected:
+                selected_playlists.append(playlist)
+            else:
+                unselected_playlists.append(playlist)
 
-        try:
-            # Show checkbox dialog
-            result = checkboxlist_dialog(
-                title="Select Playlists",
-                text="Choose which Spotify playlists to sync to Deezer:",
-                values=[(v[0], v[1]) for v in values],
-                default_values=[v[0] for v in values if v[2]]  # Pre-select currently selected
-            ).run()
+        # Display current selections in a clean format
+        if selected_playlists:
+            self.console.print("[bold green]✓ Currently Selected:[/bold green]")
+            for playlist in selected_playlists[:10]:  # Show first 10
+                name = playlist['name']
+                track_count = playlist.get('track_count', 0)
+                self.console.print(f"  [green]●[/green] {name} [dim]({track_count} tracks)[/dim]")
 
-            if result is None:
-                # User cancelled
-                self.print_warning("Selection cancelled")
-                return current_selections
+            if len(selected_playlists) > 10:
+                remaining = len(selected_playlists) - 10
+                self.console.print(f"  [dim]... and {remaining} more[/dim]")
+            self.console.print()
 
-            # Update selections
-            new_selections = {}
+        if unselected_playlists:
+            self.console.print(f"[bold dim]○ Not Selected: {len(unselected_playlists)} playlists[/bold dim]")
+            self.console.print()
+
+        # Show total
+        self.console.print(f"[bold]Total:[/bold] {len(selected_playlists)}/{len(playlists)} playlists selected")
+        self.console.print()
+
+        # Ask what to do
+        self.console.print("[bold]What would you like to do?[/bold]")
+        self.console.print()
+        self.console.print("  [cyan]1.[/cyan] Select all playlists")
+        self.console.print("  [cyan]2.[/cyan] Deselect all playlists")
+        self.console.print("  [cyan]3.[/cyan] Select specific playlists (enter numbers)")
+        self.console.print("  [cyan]4.[/cyan] Keep current selection and continue")
+        self.console.print()
+
+        choice = Prompt.ask("Choose an option", choices=["1", "2", "3", "4"], default="4")
+
+        if choice == "1":
+            # Select all
             for playlist in playlists:
                 spotify_id = playlist.get('spotify_id') or playlist.get('id')
-                new_selections[spotify_id] = spotify_id in result
+                new_selections[spotify_id] = True
+            self.console.print("\n[green]✓ All playlists selected![/green]\n")
 
-            return new_selections
+        elif choice == "2":
+            # Deselect all
+            for playlist in playlists:
+                spotify_id = playlist.get('spotify_id') or playlist.get('id')
+                new_selections[spotify_id] = False
+            self.console.print("\n[yellow]○ All playlists deselected[/yellow]\n")
 
-        except Exception as e:
-            self.print_error(f"Selection failed: {e}")
-            # Fallback to simple text-based selection
-            return self._text_based_selection(playlists, current_selections)
+        elif choice == "3":
+            # Custom selection
+            return self._interactive_selection(playlists, new_selections)
 
-    def _text_based_selection(self, playlists: List[Dict], current_selections: Dict[str, bool]) -> Dict[str, bool]:
-        """Fallback text-based playlist selection.
+        return new_selections
+
+    def _interactive_selection(self, playlists: List[Dict], current_selections: Dict[str, bool]) -> Dict[str, bool]:
+        """Interactive number-based playlist selection.
 
         Args:
             playlists: List of playlist dicts
@@ -92,35 +124,58 @@ class UI:
         Returns:
             Updated selections dict
         """
-        self.console.print("\n[yellow]Using simplified selection mode[/yellow]\n")
+        self.console.print()
+        self.console.print("[bold cyan]📋 All Playlists:[/bold cyan]\n")
 
-        new_selections = {}
+        # Show all playlists with numbers
+        new_selections = current_selections.copy()
 
         for i, playlist in enumerate(playlists, 1):
             spotify_id = playlist.get('spotify_id') or playlist.get('id')
             name = playlist['name']
             track_count = playlist.get('track_count', 0)
-            currently_selected = current_selections.get(spotify_id, False)
+            currently_selected = new_selections.get(spotify_id, False)
 
-            status = "[green]✓[/green]" if currently_selected else "[red]✗[/red]"
-            self.console.print(f"{i}. {status} {name} ({track_count} tracks)")
+            if currently_selected:
+                status = "[green]✓[/green]"
+                style = "green"
+            else:
+                status = "[dim]○[/dim]"
+                style = "dim"
 
-        self.console.print("\n[dim]Enter playlist numbers to toggle (comma-separated), or 'done' to finish:[/dim]")
-        self.console.print("[dim]Example: 1,3,5 to toggle playlists 1, 3, and 5[/dim]\n")
+            self.console.print(f"  [{style}]{i:3d}. {status} {name} ({track_count} tracks)[/{style}]")
 
-        # Start with current selections
-        new_selections = current_selections.copy()
+        self.console.print()
+        self.console.print("[bold]How to select:[/bold]")
+        self.console.print("  • Enter numbers separated by commas: [cyan]1,5,10[/cyan]")
+        self.console.print("  • Enter a range: [cyan]1-20[/cyan]")
+        self.console.print("  • Combine both: [cyan]1-10,15,20-25[/cyan]")
+        self.console.print("  • Type [cyan]'done'[/cyan] when finished")
+        self.console.print()
 
         while True:
-            response = Prompt.ask("Toggle playlists", default="done")
+            response = Prompt.ask("Select playlists", default="done")
 
             if response.lower() == 'done':
                 break
 
             try:
-                # Parse comma-separated numbers
-                numbers = [int(n.strip()) for n in response.split(',')]
+                # Parse input (supports ranges like 1-10 and individual numbers)
+                numbers = set()
+                parts = response.split(',')
 
+                for part in parts:
+                    part = part.strip()
+                    if '-' in part:
+                        # Range
+                        start, end = part.split('-')
+                        start, end = int(start.strip()), int(end.strip())
+                        numbers.update(range(start, end + 1))
+                    else:
+                        # Individual number
+                        numbers.add(int(part))
+
+                # Toggle selections
                 for num in numbers:
                     if 1 <= num <= len(playlists):
                         playlist = playlists[num - 1]
@@ -130,16 +185,19 @@ class UI:
                     else:
                         self.print_warning(f"Invalid playlist number: {num}")
 
-                # Show current state
-                self.console.print("\n[bold]Current selections:[/bold]")
-                for i, playlist in enumerate(playlists, 1):
-                    spotify_id = playlist.get('spotify_id') or playlist.get('id')
-                    if new_selections.get(spotify_id, False):
-                        self.console.print(f"  [green]✓[/green] {playlist['name']}")
+                # Show updated state
+                selected = [p for p in playlists if new_selections.get(p.get('spotify_id') or p.get('id'), False)]
+                self.console.print(f"\n[bold]Selected: {len(selected)}/{len(playlists)} playlists[/bold]")
+
+                if selected:
+                    for playlist in selected[:5]:
+                        self.console.print(f"  [green]●[/green] {playlist['name']}")
+                    if len(selected) > 5:
+                        self.console.print(f"  [dim]... and {len(selected) - 5} more[/dim]")
                 self.console.print()
 
             except ValueError:
-                self.print_error("Invalid input. Enter numbers separated by commas, or 'done'")
+                self.print_error("Invalid input. Use format: 1,2,3 or 1-10 or combination")
 
         return new_selections
 
@@ -206,6 +264,92 @@ class UI:
         synced_count = len(synced_playlists)
 
         self.console.print(f"[bold]Summary:[/bold] {selected_count}/{len(playlists)} selected, {synced_count} synced to Deezer")
+        self.console.print()
+
+    def show_deezer_diff(self, selected_spotify: List[Dict], deezer_playlists: List[Dict], synced_db: Dict[str, Dict]):
+        """Show diff between selected Spotify playlists and what's on Deezer.
+
+        Args:
+            selected_spotify: List of selected Spotify playlist dicts
+            deezer_playlists: List of Deezer playlist dicts
+            synced_db: Database records of what we've synced before (spotify_id -> deezer info)
+        """
+        self.console.print()
+        self.console.print(Panel.fit(
+            "[bold magenta]📊 Sync Preview: Spotify → Deezer[/bold magenta]\n\n"
+            "Here's what will happen when you sync",
+            border_style="magenta"
+        ))
+        self.console.print()
+
+        # Build lookup of Deezer playlists by name (for rough matching)
+        deezer_by_name = {p['title'].lower(): p for p in deezer_playlists}
+
+        to_create = []
+        to_update = []
+        already_synced = []
+
+        for spotify_pl in selected_spotify:
+            spotify_id = spotify_pl.get('spotify_id') or spotify_pl.get('id')
+            name = spotify_pl['name']
+            track_count = spotify_pl.get('track_count', 0)
+
+            # Check if we've synced this before
+            synced_record = synced_db.get(spotify_id)
+
+            if synced_record:
+                # We've synced this before
+                deezer_id = synced_record.get('deezer_id')
+                # Check if it still exists on Deezer
+                deezer_exists = any(p.get('id') == int(deezer_id) for p in deezer_playlists) if deezer_id else False
+
+                if deezer_exists:
+                    already_synced.append((name, track_count, deezer_id))
+                else:
+                    # Was synced before but deleted from Deezer - will recreate
+                    to_create.append((name, track_count))
+            else:
+                # Never synced before
+                # Check if a playlist with same name exists on Deezer (might be manual)
+                if name.lower() in deezer_by_name:
+                    to_update.append((name, track_count))
+                else:
+                    to_create.append((name, track_count))
+
+        # Display results
+        if to_create:
+            self.console.print(f"[bold green]✨ Will Create ({len(to_create)} playlists):[/bold green]")
+            for name, count in to_create[:10]:
+                self.console.print(f"  [green]+[/green] {name} [dim]({count} tracks)[/dim]")
+            if len(to_create) > 10:
+                self.console.print(f"  [dim]... and {len(to_create) - 10} more[/dim]")
+            self.console.print()
+
+        if to_update:
+            self.console.print(f"[bold yellow]🔄 Will Update ({len(to_update)} playlists):[/bold yellow]")
+            self.console.print("[dim]  (Playlists with same name found on Deezer)[/dim]")
+            for name, count in to_update[:10]:
+                self.console.print(f"  [yellow]~[/yellow] {name} [dim]({count} tracks)[/dim]")
+            if len(to_update) > 10:
+                self.console.print(f"  [dim]... and {len(to_update) - 10} more[/dim]")
+            self.console.print()
+
+        if already_synced:
+            self.console.print(f"[bold cyan]✓ Already Synced ({len(already_synced)} playlists):[/bold cyan]")
+            self.console.print("[dim]  (Will check for changes and update if needed)[/dim]")
+            for name, count, deezer_id in already_synced[:5]:
+                self.console.print(f"  [cyan]●[/cyan] {name} [dim]({count} tracks)[/dim]")
+            if len(already_synced) > 5:
+                self.console.print(f"  [dim]... and {len(already_synced) - 5} more[/dim]")
+            self.console.print()
+
+        if not (to_create or to_update or already_synced):
+            self.console.print("[dim]No playlists selected to sync[/dim]\n")
+            return
+
+        # Summary
+        total = len(to_create) + len(to_update) + len(already_synced)
+        self.console.print(f"[bold]Total:[/bold] {total} playlists will be synced to Deezer")
         self.console.print()
 
     def show_sync_preview(self, to_create: List[str], to_update: List[str], to_delete: List[str]):

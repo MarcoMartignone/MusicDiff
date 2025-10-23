@@ -734,15 +734,58 @@ def select():
     if selected_count == 0:
         console.print("\n[yellow]⚠ No playlists selected[/yellow]")
         console.print("[dim]Select at least one playlist to sync![/dim]")
-    elif selected_count == 1:
+        return
+
+    # Show selection confirmation
+    if selected_count == 1:
         console.print(f"\n[green]✓ Got it! 1 playlist ready to sync[/green] 🎵")
-        console.print("\n[bold]Next step:[/bold] Run [cyan]musicdiff sync[/cyan] to transfer to Deezer")
     elif selected_count == len(playlist_dicts):
         console.print(f"\n[green]✓ All {selected_count} playlists selected! Going for the full collection, nice![/green] 🎸")
-        console.print("\n[bold]Next step:[/bold] Run [cyan]musicdiff sync[/cyan] to transfer to Deezer")
     else:
         console.print(f"\n[green]✓ Selection saved: {selected_count}/{len(playlist_dicts)} playlists ready[/green] 🎶")
-        console.print("\n[bold]Next step:[/bold] Run [cyan]musicdiff sync[/cyan] to transfer to Deezer")
+
+    # Fetch Deezer playlists and show diff
+    try:
+        deezer = get_deezer_client()
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold magenta]{task.description}"),
+            console=console
+        ) as progress:
+            task = progress.add_task("🎧 Checking what's already on Deezer...", total=None)
+
+            # Fetch Deezer playlists
+            deezer_playlists_objs = deezer.fetch_library_playlists()
+            # Convert to dicts for easier handling
+            deezer_playlists = [
+                {
+                    'id': pl.deezer_id,
+                    'title': pl.name,
+                    'track_count': pl.track_count
+                }
+                for pl in deezer_playlists_objs
+            ]
+
+            progress.update(task, description="[green]✓ Deezer playlists loaded![/green]")
+            import time
+            time.sleep(0.2)
+
+        # Get synced playlists from database
+        synced_playlists = db.get_all_synced_playlists()
+        synced_db = {sp['spotify_id']: sp for sp in synced_playlists}
+
+        # Get selected playlists
+        selected_spotify = [p for p in playlist_dicts if new_selections.get(p['spotify_id'], False)]
+
+        # Show the diff
+        ui.show_deezer_diff(selected_spotify, deezer_playlists, synced_db)
+
+    except Exception as e:
+        console.print(f"\n[yellow]⚠ Couldn't fetch Deezer playlists: {e}[/yellow]")
+        console.print("[dim]Don't worry - you can still sync! The diff preview is just a bonus feature.[/dim]\n")
+
+    console.print("[bold]Next step:[/bold] Run [cyan]musicdiff sync[/cyan] to transfer to Deezer")
 
 
 @cli.command()
