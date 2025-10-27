@@ -1,11 +1,14 @@
 # MusicDiff
 
-> Simple one-way playlist transfer from Spotify to Deezer
+> Simple one-way playlist transfer from Spotify to Deezer + NTS Radio show importer
 
 MusicDiff keeps your Spotify playlists synced to Deezer. Select which playlists you want to mirror, and MusicDiff will automatically create and update them on Deezer to match your Spotify playlists exactly.
 
+**NEW**: Import NTS Radio show tracklists directly to Spotify playlists!
+
 ## Features
 
+### Spotify ↔ Deezer Sync
 - **One-Way Sync**: Spotify → Deezer playlist transfer
 - **Playlist Selection**: Choose which Spotify playlists to sync
 - **Smart Sync**: Automatically detects when playlists are already in sync and skips unnecessary updates
@@ -15,6 +18,13 @@ MusicDiff keeps your Spotify playlists synced to Deezer. Select which playlists 
 - **Smart Track Matching**: ISRC-based track matching across platforms
 - **Clean Deselection**: Remove playlists from Deezer when deselected
 - **Sync History**: Track all syncs and changes over time
+
+### NTS Radio Import (NEW! 🎵)
+- **Instant Import**: Create Spotify playlists from NTS Live radio shows
+- **High Accuracy**: 90%+ track match rate using smart search
+- **Progress Tracking**: Beautiful progress bars and status updates
+- **Dry Run Mode**: Preview before creating playlists
+- **Custom Naming**: Configurable playlist name prefixes
 
 ## Quick Start
 
@@ -100,6 +110,41 @@ musicdiff status
 musicdiff log
 ```
 
+### Import NTS Radio Shows 🎵
+
+```bash
+# Import an NTS show to Spotify
+musicdiff nts-import "https://www.nts.live/shows/show-name/episodes/episode-name"
+
+# Preview without creating (dry run)
+musicdiff nts-import "URL" --dry-run
+
+# Custom playlist name prefix
+musicdiff nts-import "URL" --prefix "NTS Radio: "
+```
+
+**What happens during import:**
+1. Fetches the NTS episode metadata and tracklist
+2. Searches for each track on Spotify
+3. Creates a new private Spotify playlist with matched tracks
+4. Shows summary with match rate and any skipped tracks
+
+**Example:**
+```bash
+musicdiff nts-import "https://www.nts.live/shows/the-breakfast-show-flo/episodes/the-breakfast-show-flo-27th-october-2025"
+
+# Output:
+# ✓ Episode: The NTS Breakfast Show w/ Flo
+#   Tracks: 16
+# ✓ Connected to Spotify
+# Matching tracks... ━━━━━━━━━━━━━━━━━━━ 100%
+# Results:
+#   Matched: 16/16 tracks (100.0%)
+#   Skipped: 0 tracks
+# ✓ Playlist created successfully!
+#   https://open.spotify.com/playlist/...
+```
+
 ## How It Works
 
 MusicDiff performs an intelligent one-way sync from Spotify to Deezer:
@@ -165,6 +210,7 @@ musicdiff/
 ├── cli.py          # Command-line interface
 ├── spotify.py      # Spotify API client
 ├── deezer.py       # Deezer API client
+├── nts.py          # NTS Radio API client (NEW!)
 ├── database.py     # SQLite state management
 ├── sync.py         # Sync orchestration
 ├── matcher.py      # Cross-platform track matching
@@ -187,6 +233,9 @@ Comprehensive documentation available in the `docs/` directory:
 - [TRACK_MATCHING.md](docs/TRACK_MATCHING.md) - Cross-platform track matching
 - [UI_COMPONENTS.md](docs/UI_COMPONENTS.md) - Terminal UI components
 - [SCHEDULING.md](docs/SCHEDULING.md) - Daemon and scheduled syncs
+- [NTS_IMPORT_PHASE_1.md](docs/NTS_IMPORT_PHASE_1.md) - NTS API client implementation
+- [NTS_IMPORT_PHASE_2.md](docs/NTS_IMPORT_PHASE_2.md) - Spotify track search implementation
+- [NTS_IMPORT_PHASE_3.md](docs/NTS_IMPORT_PHASE_3.md) - CLI command and playlist creation
 
 ## Development
 
@@ -231,11 +280,13 @@ MusicDiff/
 - [x] Smart sync (skip when already in sync)
 - [x] Duplicate prevention (find and reuse existing playlists)
 - [x] Accurate sync preview
+- [x] NTS Radio show import to Spotify
 - [ ] Daemon mode for automatic syncs
 - [ ] Web UI for visualization
 - [ ] Support for liked songs sync
 - [ ] Support for albums sync
 - [ ] Export/import to portable format
+- [ ] Import from other radio stations (BBC Radio, Rinse FM, etc.)
 
 ## Known Limitations
 

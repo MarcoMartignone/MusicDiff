@@ -606,6 +606,60 @@ class SpotifyClient:
 
         return None
 
+    def search_track_uri(self, artist: str, title: str, limit: int = 5) -> Optional[str]:
+        """Search for a track by artist and title, returning its URI.
+
+        Designed for NTS import feature - searches Spotify and returns
+        the URI of the best match for adding to playlists.
+
+        Args:
+            artist: Track artist name
+            title: Track title
+            limit: Number of results to fetch (default: 5)
+
+        Returns:
+            Spotify track URI (e.g., "spotify:track:xxx") or None if not found
+        """
+        if not self.sp:
+            raise RuntimeError("Not authenticated. Call authenticate() first.")
+
+        # Try field-specific search first (most accurate)
+        query = f"artist:{artist} track:{title}"
+
+        try:
+            results = self._api_call_with_retry(
+                self.sp.search,
+                q=query,
+                type='track',
+                limit=limit
+            )
+
+            items = results.get('tracks', {}).get('items', [])
+
+            if items:
+                # Return first result URI
+                return items[0]['uri']
+
+            # If field search found nothing, try simple combined search
+            simple_query = f"{artist} {title}"
+            results = self._api_call_with_retry(
+                self.sp.search,
+                q=simple_query,
+                type='track',
+                limit=limit
+            )
+
+            items = results.get('tracks', {}).get('items', [])
+
+            if items:
+                return items[0]['uri']
+
+        except Exception:
+            # Search failed - return None
+            pass
+
+        return None
+
     def _parse_track(self, track_data: dict) -> Track:
         """Parse Spotify track data into Track object.
 

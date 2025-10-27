@@ -1035,6 +1035,140 @@ def config(key, value):
     console.print("Use environment variables for now")
 
 
+@cli.command(name='nts-import')
+@click.argument('nts_url')
+@click.option('--dry-run', is_flag=True, help='Preview without creating playlist')
+@click.option('--prefix', default='NTS: ', help='Playlist name prefix (default: "NTS: ")')
+def nts_import(nts_url, dry_run, prefix):
+    """Import NTS show tracklist to Spotify playlist.
+
+    Fetches an NTS radio show tracklist and creates a matching Spotify playlist.
+    Searches for each track on Spotify and adds all matches to a new playlist.
+
+    \b
+    Example:
+        musicdiff nts-import "https://www.nts.live/shows/covco/episodes/..."
+        musicdiff nts-import "URL" --dry-run
+        musicdiff nts-import "URL" --prefix "NTS Radio: "
+    """
+    from musicdiff.nts import NTSClient
+    from rich.table import Table
+
+    console.print()
+
+    # 1. Fetch NTS episode
+    console.print("[bold cyan]Fetching NTS episode...[/bold cyan]")
+
+    try:
+        nts_client = NTSClient()
+        episode = nts_client.get_episode_from_url(nts_url)
+    except ValueError as e:
+        console.print(f"[red]✗ Error: {e}[/red]")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]✗ Failed to fetch episode: {e}[/red]")
+        sys.exit(1)
+
+    console.print(f"[green]✓[/green] Episode: {episode.name}")
+    console.print(f"[dim]  Broadcast: {episode.broadcast_date}[/dim]")
+    console.print(f"[dim]  Tracks: {len(episode.tracklist)}[/dim]\n")
+
+    if not episode.tracklist:
+        console.print("[yellow]⚠ No tracks found in this episode[/yellow]")
+        return
+
+    # 2. Authenticate with Spotify
+    console.print("[bold cyan]Connecting to Spotify...[/bold cyan]")
+    try:
+        spotify_client = get_spotify_client()
+        console.print("[green]✓[/green] Connected to Spotify\n")
+    except SystemExit:
+        return
+
+    # 3. Search tracks on Spotify with progress bar
+    console.print("[bold cyan]Searching tracks on Spotify...[/bold cyan]")
+
+    matched = []
+    skipped = []
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console
+    ) as progress:
+        task = progress.add_task("[cyan]Matching tracks...", total=len(episode.tracklist))
+
+        for track in episode.tracklist:
+            uri = spotify_client.search_track_uri(track.artist, track.title)
+
+            if uri:
+                matched.append({'track': track, 'uri': uri})
+            else:
+                skipped.append(track)
+
+            progress.update(task, advance=1)
+
+    # 4. Display summary
+    console.print()
+    total = len(episode.tracklist)
+    match_rate = (len(matched) / total * 100) if total > 0 else 0
+
+    console.print("[bold]Results:[/bold]")
+    console.print(f"  Matched: [green]{len(matched)}[/green]/{total} tracks ([green]{match_rate:.1f}%[/green])")
+    console.print(f"  Skipped: [yellow]{len(skipped)}[/yellow] tracks")
+
+    # Show skipped tracks table
+    if skipped:
+        console.print("\n[yellow]Skipped Tracks:[/yellow]")
+        table = Table(show_header=True, header_style="bold yellow")
+        table.add_column("Artist", style="dim", no_wrap=False)
+        table.add_column("Title", no_wrap=False)
+
+        for track in skipped[:10]:  # Show first 10
+            table.add_row(track.artist, track.title)
+
+        if len(skipped) > 10:
+            table.add_row("...", f"({len(skipped)-10} more)")
+
+        console.print(table)
+
+    # 5. Create playlist (if not dry-run)
+    console.print()
+
+    if dry_run:
+        console.print("[yellow]🔍 Dry run - no playlist created[/yellow]")
+        return
+
+    if not matched:
+        console.print("[red]✗ No tracks found on Spotify - cannot create playlist[/red]")
+        sys.exit(1)
+
+    # Create the playlist
+    playlist_name = f"{prefix}{episode.name}"
+    console.print(f"[bold cyan]Creating playlist: {playlist_name}[/bold cyan]")
+
+    try:
+        playlist_id = spotify_client.create_playlist(
+            name=playlist_name,
+            description=f"Imported from NTS Live - {episode.broadcast_date}",
+            public=False
+        )
+
+        # Add tracks
+        track_uris = [m['uri'] for m in matched]
+        spotify_client.add_tracks_to_playlist(playlist_id, track_uris)
+
+        console.print(f"[bold green]✓ Playlist created successfully![/bold green]")
+        console.print(f"[dim]  {len(matched)} tracks added[/dim]")
+        console.print(f"[dim]  https://open.spotify.com/playlist/{playlist_id}[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]✗ Failed to create playlist: {e}[/red]")
+        sys.exit(1)
+
+
 def main():
     """Entry point for the CLI."""
     cli(obj={})
