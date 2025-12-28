@@ -244,10 +244,33 @@ class Database:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_download_status ON download_status(status)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_download_playlist ON download_status(playlist_spotify_id)")
 
+        # Rekordbox tag queue table - tracks pending Rekordbox tag applications
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS rekordbox_tag_queue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_path TEXT UNIQUE NOT NULL,
+                playlist_name TEXT NOT NULL,
+                deezer_id TEXT,
+                title TEXT,
+                artist TEXT,
+                album TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                rekordbox_content_id TEXT,
+                rekordbox_tag_id TEXT,
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                applied_at TIMESTAMP
+            )
+        """)
+
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_rekordbox_status ON rekordbox_tag_queue(status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_rekordbox_playlist ON rekordbox_tag_queue(playlist_name)")
+
         # Initialize schema version
         cursor.execute("""
             INSERT OR IGNORE INTO metadata (key, value)
-            VALUES ('schema_version', '3')
+            VALUES ('schema_version', '4')
         """)
 
         conn.commit()
@@ -908,6 +931,206 @@ class Database:
         """Close database connection."""
         # Connection is created per-operation, so no persistent connection to close
         pass
+
+    # Rekordbox tag queue operations
+
+    def queue_rekordbox_tag(self, file_path: str, playlist_name: str, deezer_id: str = None,
+                            title: str = None, artist: str = None, album: str = None) -> None:
+        """Add a track to the Rekordbox tag queue.
+
+        Args:
+            file_path: Path to the audio file
+            playlist_name: Name of the playlist (used as tag name)
+            deezer_id: Deezer track ID (optional)
+            title: Track title (optional)
+            artist: Track artist (optional)
+            album: Track album (optional)
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO rekordbox_tag_queue (file_path, playlist_name, deezer_id, title, artist, album, status)
+            VALUES (?, ?, ?, ?, ?, ?, 'pending')
+            ON CONFLICT(file_path) DO UPDATE SET
+                playlist_name = excluded.playlist_name,
+                deezer_id = COALESCE(excluded.deezer_id, deezer_id),
+                title = COALESCE(excluded.title, title),
+                artist = COALESCE(excluded.artist, artist),
+                album = COALESCE(excluded.album, album),
+                status = 'pending',
+                error_message = NULL,
+                updated_at = CURRENT_TIMESTAMP
+        """, (file_path, playlist_name, deezer_id, title, artist, album))
+
+        conn.commit()
+        conn.close()
+
+    def get_pending_rekordbox_tags(self, playlist_name: str = None) -> List[Dict]:
+        """Get all pending Rekordbox tag applications.
+
+        Args:
+            playlist_name: Filter by playlist name (optional)
+
+        Returns:
+            List of pending tag queue records
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        if playlist_name:
+            results = cursor.execute("""
+                SELECT * FROM rekordbox_tag_queue
+                WHERE status = 'pending' AND playlist_name = ?
+                ORDER BY created_at
+            """, (playlist_name,)).fetchall()
+        else:
+            results = cursor.execute("""
+                SELECT * FROM rekordbox_tag_queue
+                WHERE status = 'pending'
+                ORDER BY created_at
+            """).fetchall()
+
+        conn.close()
+        return [dict(row) for row in results]
+
+    def update_rekordbox_tag_status(self, file_path: str, status: str,
+                                     content_id: str = None, tag_id: str = None,
+                                     error_message: str = None) -> None:
+        """Update Rekordbox tag queue status.
+
+        Args:
+            file_path: Path to the audio file
+            status: New status (pending, applied, not_found, failed)
+            content_id: Rekordbox content ID (optional)
+            tag_id: Rekordbox tag ID (optional)
+            error_message: Error message if failed (optional)
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        if status == 'applied':
+            cursor.execute("""
+                UPDATE rekordbox_tag_queue
+                SET status = ?, rekordbox_content_id = ?, rekordbox_tag_id = ?,
+                    error_message = NULL, updated_at = CURRENT_TIMESTAMP,
+                    applied_at = CURRENT_TIMESTAMP
+                WHERE file_path = ?
+            """, (status, content_id, tag_id, file_path))
+        else:
+            cursor.execute("""
+                UPDATE rekordbox_tag_queue
+                SET status = ?, rekordbox_content_id = ?, rekordbox_tag_id = ?,
+                    error_message = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE file_path = ?
+            """, (status, content_id, tag_id, error_message, file_path))
+
+        conn.commit()
+        conn.close()
+
+    def get_rekordbox_tag_stats(self) -> Dict:
+        """Get Rekordbox tag queue statistics.
+
+        Returns:
+            Dict with counts: pending, applied, not_found, failed, total
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        result = cursor.execute("""
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+                SUM(CASE WHEN status = 'applied' THEN 1 ELSE 0 END) as applied,
+                SUM(CASE WHEN status = 'not_found' THEN 1 ELSE 0 END) as not_found,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+            FROM rekordbox_tag_queue
+        """).fetchone()
+
+        conn.close()
+
+        return {
+            'total': result[0] or 0,
+            'pending': result[1] or 0,
+            'applied': result[2] or 0,
+            'not_found': result[3] or 0,
+            'failed': result[4] or 0
+        }
+
+    def get_rekordbox_tags_by_status(self, status: str) -> List[Dict]:
+        """Get all Rekordbox tag queue entries with a specific status.
+
+        Args:
+            status: Status to filter by (pending, applied, not_found, failed)
+
+        Returns:
+            List of tag queue records
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        results = cursor.execute("""
+            SELECT * FROM rekordbox_tag_queue
+            WHERE status = ?
+            ORDER BY updated_at DESC
+        """, (status,)).fetchall()
+
+        conn.close()
+        return [dict(row) for row in results]
+
+    def get_rekordbox_tags_by_playlist(self, playlist_name: str) -> List[Dict]:
+        """Get all Rekordbox tag queue entries for a playlist.
+
+        Args:
+            playlist_name: Playlist name to filter by
+
+        Returns:
+            List of tag queue records
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        results = cursor.execute("""
+            SELECT * FROM rekordbox_tag_queue
+            WHERE playlist_name = ?
+            ORDER BY created_at
+        """, (playlist_name,)).fetchall()
+
+        conn.close()
+        return [dict(row) for row in results]
+
+    def clear_rekordbox_tag_queue(self, status: str = None, playlist_name: str = None) -> int:
+        """Clear Rekordbox tag queue entries.
+
+        Args:
+            status: Only clear records with this status (optional)
+            playlist_name: Only clear records for this playlist (optional)
+
+        Returns:
+            Number of records deleted
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        if status and playlist_name:
+            cursor.execute(
+                "DELETE FROM rekordbox_tag_queue WHERE status = ? AND playlist_name = ?",
+                (status, playlist_name)
+            )
+        elif status:
+            cursor.execute("DELETE FROM rekordbox_tag_queue WHERE status = ?", (status,))
+        elif playlist_name:
+            cursor.execute("DELETE FROM rekordbox_tag_queue WHERE playlist_name = ?", (playlist_name,))
+        else:
+            cursor.execute("DELETE FROM rekordbox_tag_queue")
+
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return deleted
 
 
 if __name__ == '__main__':

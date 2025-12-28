@@ -2220,6 +2220,441 @@ def nts_import(nts_url, dry_run, prefix):
         sys.exit(1)
 
 
+# ==================== REKORDBOX COMMANDS ====================
+
+@cli.group()
+def rekordbox():
+    """Rekordbox integration commands.
+
+    Apply My Tags to tracks for smart playlist filtering.
+
+    \b
+    IMPORTANT: Rekordbox must be CLOSED when using apply-tags.
+    A backup is created automatically before any modifications.
+
+    \b
+    Examples:
+        musicdiff rekordbox status           # Check integration status
+        musicdiff rekordbox apply-tags       # Apply pending tags
+        musicdiff rekordbox list-tags        # List all My Tags
+    """
+    pass
+
+
+@rekordbox.command(name='status')
+def rekordbox_status():
+    """Check Rekordbox integration status.
+
+    Shows whether pyrekordbox is available, pending tags count,
+    and last tag application time.
+    """
+    from musicdiff.rekordbox import (
+        RekordboxClient, PYREKORDBOX_AVAILABLE,
+        get_default_rekordbox_db_path, get_rekordbox_backup_dir
+    )
+
+    db = get_database()
+
+    console.print("[bold]Rekordbox Integration Status[/bold]\n")
+
+    # Check pyrekordbox availability
+    if not PYREKORDBOX_AVAILABLE:
+        console.print("[red]✗ pyrekordbox not installed[/red]")
+        console.print("\n[bold]To install:[/bold]")
+        console.print("  brew install sqlcipher")
+        console.print("  pip install pyrekordbox")
+        return
+
+    console.print("[green]✓ pyrekordbox installed[/green]")
+
+    # Check database
+    db_path = get_default_rekordbox_db_path()
+    if db_path.exists():
+        console.print(f"[green]✓ Rekordbox database found[/green]")
+        console.print(f"  [dim]{db_path}[/dim]")
+    else:
+        console.print(f"[red]✗ Rekordbox database not found[/red]")
+        console.print(f"  [dim]Expected: {db_path}[/dim]")
+        return
+
+    # Check if Rekordbox is running
+    try:
+        client = RekordboxClient(dry_run=True)
+        if client.check_rekordbox_running():
+            console.print("[yellow]⚠ Rekordbox is currently running[/yellow]")
+            console.print("  [dim]Close Rekordbox before using apply-tags[/dim]")
+        else:
+            console.print("[green]✓ Rekordbox is not running[/green]")
+    except Exception as e:
+        console.print(f"[yellow]⚠ Could not check Rekordbox status: {e}[/yellow]")
+
+    # Show tag queue stats
+    console.print()
+    stats = db.get_rekordbox_tag_stats()
+    console.print("[bold]Tag Queue:[/bold]")
+    console.print(f"  Pending: [yellow]{stats['pending']}[/yellow]")
+    console.print(f"  Applied: [green]{stats['applied']}[/green]")
+    console.print(f"  Not found: [dim]{stats['not_found']}[/dim]")
+    console.print(f"  Failed: [red]{stats['failed']}[/red]")
+    console.print(f"  Total: {stats['total']}")
+
+    # Show backups
+    backup_dir = get_rekordbox_backup_dir()
+    if backup_dir.exists():
+        backups = list(backup_dir.glob("master_backup_*.db"))
+        if backups:
+            latest = max(backups, key=lambda p: p.stat().st_mtime)
+            console.print(f"\n[bold]Backups:[/bold]")
+            console.print(f"  Location: {backup_dir}")
+            console.print(f"  Count: {len(backups)}")
+            console.print(f"  Latest: {latest.name}")
+
+
+@rekordbox.command(name='list-tags')
+def rekordbox_list_tags():
+    """List all My Tags defined in Rekordbox.
+
+    Shows all available My Tags that can be applied to tracks.
+    Requires Rekordbox to be closed.
+    """
+    from musicdiff.rekordbox import RekordboxClient, PYREKORDBOX_AVAILABLE
+
+    if not PYREKORDBOX_AVAILABLE:
+        console.print("[red]Error: pyrekordbox not installed[/red]")
+        console.print("Install with: pip install pyrekordbox")
+        return
+
+    try:
+        client = RekordboxClient(dry_run=True)
+
+        if not client.check_available():
+            console.print(f"[red]Error: {client.get_availability_message()}[/red]")
+            return
+
+        if client.check_rekordbox_running():
+            console.print("[yellow]Warning: Rekordbox is running. Close it for accurate results.[/yellow]")
+            console.print()
+
+        tags = client.list_all_tags()
+
+        if not tags:
+            console.print("[yellow]No My Tags found in Rekordbox.[/yellow]")
+            return
+
+        console.print(f"[bold]My Tags ({len(tags)}):[/bold]\n")
+
+        for tag in sorted(tags, key=lambda t: t['name']):
+            console.print(f"  • {tag['name']}")
+
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+
+
+@rekordbox.command(name='apply-tags')
+@click.option('--playlist', '-p', 'playlist_name', help='Apply tags for specific playlist only')
+@click.option('--dry-run', is_flag=True, help='Preview without applying (safe mode)')
+@click.option('--force', '-f', is_flag=True, help='Apply even if Rekordbox might be running')
+def rekordbox_apply_tags(playlist_name, dry_run, force):
+    """Apply Rekordbox My Tags to downloaded tracks.
+
+    Scans completed downloads and applies My Tags to tracks in Rekordbox.
+    The playlist name becomes the My Tag name.
+
+    \b
+    IMPORTANT:
+    - Rekordbox MUST be closed before running this command
+    - A backup is created automatically before any modifications
+    - Use --dry-run to preview changes safely
+
+    \b
+    Examples:
+        musicdiff rekordbox apply-tags --dry-run    # Preview
+        musicdiff rekordbox apply-tags              # Apply all
+        musicdiff rekordbox apply-tags -p "breaks"  # Apply for playlist
+    """
+    from musicdiff.rekordbox import (
+        RekordboxClient, RekordboxRunningError, RekordboxError,
+        PYREKORDBOX_AVAILABLE
+    )
+
+    if not PYREKORDBOX_AVAILABLE:
+        console.print("[red]Error: pyrekordbox not installed[/red]")
+        console.print("\n[bold]To install:[/bold]")
+        console.print("  brew install sqlcipher")
+        console.print("  pip install pyrekordbox")
+        return
+
+    db = get_database()
+
+    # Get download path
+    download_path = db.get_metadata('download_path')
+    if not download_path:
+        console.print("[red]Error: No download path configured.[/red]")
+        console.print("[dim]Run 'musicdiff download' first to set up.[/dim]")
+        return
+
+    # Get selected playlists from musicdiff database
+    selected_playlists = db.get_selected_playlists()
+    if not selected_playlists:
+        console.print("[yellow]No playlists synced with musicdiff.[/yellow]")
+        console.print("[dim]Run 'musicdiff select' first to select playlists.[/dim]")
+        return
+
+    # Scan filesystem for tracks in synced playlist folders
+    console.print("[bold]Scanning playlist folders...[/bold]\n")
+
+    tracks_to_tag = []
+    for playlist in selected_playlists:
+        plist_name = playlist['name']
+
+        # Filter by playlist name if specified
+        if playlist_name and playlist_name.lower() not in plist_name.lower():
+            continue
+
+        # Check if playlist folder exists
+        playlist_folder = Path(download_path) / plist_name
+        if not playlist_folder.exists():
+            continue
+
+        # Find all .mp3 files in the playlist folder
+        for mp3_file in playlist_folder.glob('*.mp3'):
+            tracks_to_tag.append({
+                'file_path': str(mp3_file),
+                'playlist_name': plist_name,
+                'title': mp3_file.stem,
+                'artist': None,
+                'deezer_id': None,
+            })
+
+    if not tracks_to_tag:
+        console.print("[green]No tracks to tag.[/green]")
+        if playlist_name:
+            console.print(f"[dim]No completed downloads for playlist matching: {playlist_name}[/dim]")
+        return
+
+    console.print(f"[bold]Found {len(tracks_to_tag)} tracks to tag[/bold]\n")
+
+    if dry_run:
+        console.print("[yellow]DRY RUN - No changes will be made[/yellow]\n")
+
+    # Group by playlist name for display
+    by_playlist = {}
+    for item in tracks_to_tag:
+        pname = item['playlist_name']
+        if pname not in by_playlist:
+            by_playlist[pname] = []
+        by_playlist[pname].append(item)
+
+    for pname, items in by_playlist.items():
+        console.print(f"  [cyan]{pname}[/cyan]: {len(items)} tracks")
+
+    # Use tracks_to_tag instead of pending
+    pending = tracks_to_tag
+
+    console.print()
+
+    # Initialize client
+    try:
+        client = RekordboxClient(dry_run=dry_run)
+
+        if not client.check_available():
+            console.print(f"[red]Error: {client.get_availability_message()}[/red]")
+            return
+
+        # Check if Rekordbox is running
+        if client.check_rekordbox_running():
+            if force:
+                console.print("[yellow]Warning: Rekordbox appears to be running![/yellow]")
+                console.print("[yellow]Proceeding anyway due to --force flag...[/yellow]\n")
+            else:
+                console.print("[red]Error: Rekordbox is currently running.[/red]")
+                console.print("Please close Rekordbox and try again.")
+                console.print("[dim]Use --force to override (not recommended)[/dim]")
+                return
+
+        # Create backup before modifications
+        if not dry_run:
+            console.print("[cyan]Creating Rekordbox database backup...[/cyan]")
+            try:
+                backup_path = client.create_backup()
+                if backup_path:
+                    console.print(f"[green]✓ Backup created: {backup_path.name}[/green]\n")
+            except Exception as e:
+                console.print(f"[red]Warning: Could not create backup: {e}[/red]")
+                if not Confirm.ask("Continue without backup?", default=False):
+                    return
+
+        # Process tracks
+        applied = 0
+        not_found = 0
+        failed = 0
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TextColumn("[dim]{task.completed}/{task.total}[/dim]"),
+            console=console
+        ) as progress:
+            task = progress.add_task("Applying tags...", total=len(pending))
+
+            for item in pending:
+                file_path = item['file_path']
+                plist_name = item['playlist_name']
+                artist = (item.get('artist') or 'Unknown')[:15]
+                title = (item.get('title') or 'Unknown')[:20]
+
+                progress.update(task, description=f"{artist} - {title}")
+
+                try:
+                    result = client.process_track(
+                        file_path=file_path,
+                        playlist_name=plist_name,
+                        metadata={
+                            'title': item.get('title'),
+                            'artist': item.get('artist'),
+                            'album': item.get('album')
+                        }
+                    )
+
+                    if result.success:
+                        applied += 1
+                        if not dry_run:
+                            db.update_rekordbox_tag_status(
+                                file_path, 'applied',
+                                content_id=result.content_id,
+                                tag_id=result.tag_id
+                            )
+                    elif result.error and 'not found' in result.error.lower():
+                        not_found += 1
+                        if not dry_run:
+                            db.update_rekordbox_tag_status(
+                                file_path, 'not_found',
+                                error_message=result.error
+                            )
+                    else:
+                        failed += 1
+                        if not dry_run:
+                            db.update_rekordbox_tag_status(
+                                file_path, 'failed',
+                                error_message=result.error
+                            )
+
+                except NotImplementedError as e:
+                    # Expected for now - write operations not yet implemented
+                    failed += 1
+                    if not dry_run:
+                        db.update_rekordbox_tag_status(
+                            file_path, 'failed',
+                            error_message=str(e)[:200]
+                        )
+                except Exception as e:
+                    failed += 1
+                    if not dry_run:
+                        db.update_rekordbox_tag_status(
+                            file_path, 'failed',
+                            error_message=str(e)[:200]
+                        )
+
+                progress.advance(task)
+
+        # Summary
+        console.print()
+        console.print("[bold]Results:[/bold]")
+
+        if dry_run:
+            console.print(f"  [cyan]Would apply:[/cyan] {applied}")
+            console.print(f"  [yellow]Not found:[/yellow] {not_found}")
+            console.print(f"  [red]Would fail:[/red] {failed}")
+        else:
+            console.print(f"  [green]Applied:[/green] {applied}")
+            console.print(f"  [yellow]Not found:[/yellow] {not_found}")
+            console.print(f"  [red]Failed:[/red] {failed}")
+
+        if failed > 0 and not dry_run:
+            console.print("\n[dim]Some operations failed. This feature is still in development.[/dim]")
+            console.print("[dim]Tracks must be imported into Rekordbox first.[/dim]")
+
+    except RekordboxRunningError as e:
+        console.print(f"[red]Error: {e}[/red]")
+    except RekordboxError as e:
+        console.print(f"[red]Error: {e}[/red]")
+    except Exception as e:
+        console.print(f"[red]Unexpected error: {e}[/red]")
+        import traceback
+        traceback.print_exc()
+
+
+@rekordbox.command(name='queue')
+@click.option('--clear', 'clear_queue', is_flag=True, help='Clear the tag queue')
+@click.option('--status', 'filter_status', type=click.Choice(['pending', 'applied', 'failed', 'not_found']),
+              help='Filter by status')
+def rekordbox_queue(clear_queue, filter_status):
+    """View or manage the Rekordbox tag queue.
+
+    Shows tracks waiting for Rekordbox tag application.
+
+    \b
+    Examples:
+        musicdiff rekordbox queue                 # Show queue
+        musicdiff rekordbox queue --status failed # Show failed only
+        musicdiff rekordbox queue --clear         # Clear all
+    """
+    db = get_database()
+
+    if clear_queue:
+        if Confirm.ask("Clear all Rekordbox tag queue entries?", default=False):
+            deleted = db.clear_rekordbox_tag_queue()
+            console.print(f"[green]✓ Cleared {deleted} entries[/green]")
+        return
+
+    # Show queue
+    if filter_status:
+        items = db.get_rekordbox_tags_by_status(filter_status)
+    else:
+        # Get all
+        items = []
+        for status in ['pending', 'applied', 'failed', 'not_found']:
+            items.extend(db.get_rekordbox_tags_by_status(status))
+
+    if not items:
+        console.print("[dim]No items in Rekordbox tag queue.[/dim]")
+        return
+
+    console.print(f"[bold]Rekordbox Tag Queue ({len(items)} items)[/bold]\n")
+
+    # Group by status
+    by_status = {}
+    for item in items:
+        status = item['status']
+        if status not in by_status:
+            by_status[status] = []
+        by_status[status].append(item)
+
+    status_colors = {
+        'pending': 'yellow',
+        'applied': 'green',
+        'failed': 'red',
+        'not_found': 'dim'
+    }
+
+    for status, status_items in by_status.items():
+        color = status_colors.get(status, 'white')
+        console.print(f"[{color}]{status.upper()} ({len(status_items)})[/{color}]")
+
+        for item in status_items[:10]:  # Show first 10 per status
+            artist = item.get('artist', 'Unknown')[:20]
+            title = item.get('title', 'Unknown')[:25]
+            playlist = item.get('playlist_name', 'Unknown')[:20]
+            console.print(f"  [{color}]•[/{color}] {artist} - {title} [{playlist}]")
+
+        if len(status_items) > 10:
+            console.print(f"  [dim]... and {len(status_items) - 10} more[/dim]")
+
+        console.print()
+
+
 def main():
     """Entry point for the CLI."""
     cli(obj={})
