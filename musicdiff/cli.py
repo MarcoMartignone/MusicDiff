@@ -28,6 +28,15 @@ from musicdiff.deezer import DeezerClient
 from musicdiff.sync import SyncEngine, SyncMode
 from musicdiff.scheduler import SyncDaemon
 from musicdiff.ui import UI
+from musicdiff.downloader import (
+    DeemixDownloader,
+    DeemixNotFoundError,
+    DeemixAuthError,
+    DownloadStats,
+    get_default_download_path,
+    apply_playlist_metadata,
+    MUTAGEN_AVAILABLE
+)
 
 console = Console()
 
@@ -38,6 +47,27 @@ def get_config_dir() -> Path:
     config_dir = Path.home() / 'Documents' / 'MusicDiff' / '.musicdiff'
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir
+
+
+def sanitize_folder_name(name: str) -> str:
+    """Sanitize a string for use as a folder name.
+
+    Args:
+        name: The string to sanitize
+
+    Returns:
+        A filesystem-safe folder name
+    """
+    import re
+    # Replace characters not allowed in folder names
+    # Keep letters, numbers, spaces, hyphens, underscores, and parentheses
+    sanitized = re.sub(r'[<>:"/\\|?*]', '', name)
+    # Replace multiple spaces with single space
+    sanitized = re.sub(r'\s+', ' ', sanitized)
+    # Strip leading/trailing spaces and dots
+    sanitized = sanitized.strip(' .')
+    # Limit length to 255 characters (common filesystem limit)
+    return sanitized[:255] if sanitized else 'Unknown Playlist'
 
 
 def load_env_file():
@@ -816,8 +846,8 @@ def select():
     console.print("[bold]Next step:[/bold] Run [cyan]musicdiff sync[/cyan] to transfer to Deezer")
 
 
-@cli.command()
-def list():
+@cli.command('list')
+def list_playlists():
     """Show all Spotify playlists with sync status.
 
     Displays which playlists are selected for sync and their last sync time.
@@ -934,6 +964,1043 @@ def log(limit, verbose):
             if details and details.get('failed'):
                 console.print(f"  Failed: {', '.join(details['failed'])}")
         console.print()
+
+
+@cli.command()
+@click.option('--playlist', '-p', 'playlist_name', help='Download specific playlist by name')
+@click.option('--quality', '-q', type=click.Choice(['128', '320', 'flac']),
+              default='320', help='Audio quality (default: 320)')
+@click.option('--path', '-o', 'output_path', type=click.Path(),
+              help='Download location')
+@click.option('--dry-run', is_flag=True, help='Show what would be downloaded without downloading')
+@click.option('--retry-failed', is_flag=True, help='Retry previously failed downloads')
+@click.option('--force', '-f', is_flag=True, help='Re-download even if already completed')
+@click.option('--set-path', 'new_path', type=click.Path(),
+              help='Set and save default download path')
+@click.option('--status', 'show_status', is_flag=True, help='Show download queue status')
+@click.option('--clear', 'clear_history', is_flag=True, help='Clear download history')
+@click.option('--update-metadata', 'update_metadata', is_flag=True,
+              help='Update metadata on already-downloaded files without re-downloading')
+@click.option('--verify', 'verify_files', is_flag=True,
+              help='Check for missing files and re-download them')
+@click.option('--scan', 'scan_files', is_flag=True,
+              help='Scan download folder and match existing files to database entries')
+@click.option('--update-artwork', 'update_artwork', is_flag=True,
+              help='Update cover art on already-downloaded files with high-res artwork')
+@click.option('--no-auto-scan', 'no_auto_scan', is_flag=True,
+              help='Skip automatic file scanning after download')
+@click.option('--no-auto-metadata', 'no_auto_metadata', is_flag=True,
+              help='Skip automatic metadata update after download')
+def download(playlist_name, quality, output_path, dry_run, retry_failed, force, new_path, show_status, clear_history, update_metadata, verify_files, scan_files, update_artwork, no_auto_scan, no_auto_metadata):
+    """Download tracks from synced playlists using deemix.
+
+    Downloads tracks from all selected playlists or a specific playlist.
+    Tracks that have already been downloaded are skipped unless --force is used.
+    Requires deemix CLI to be installed.
+
+    \b
+    Examples:
+        musicdiff download                    # Download all pending tracks
+        musicdiff download -p "My Playlist"   # Download specific playlist
+        musicdiff download -q flac            # Download in FLAC quality
+        musicdiff download --retry-failed     # Retry failed downloads
+        musicdiff download --dry-run          # Preview what would download
+        musicdiff download --set-path ~/Music # Change download location
+        musicdiff download --status           # Show download queue status
+        musicdiff download --verify           # Find and re-download missing files
+        musicdiff download --scan             # Match existing files to database
+    """
+    db = get_database()
+
+    # Handle --status flag
+    if show_status:
+        stats = db.get_download_stats()
+        console.print("[bold cyan]Download Queue Status[/bold cyan]\n")
+        console.print(f"  Total tracks: {stats['total']}")
+        console.print(f"  [yellow]Pending:[/yellow] {stats['pending']}")
+        console.print(f"  [blue]Downloading:[/blue] {stats['downloading']}")
+        console.print(f"  [green]Completed:[/green] {stats['completed']}")
+        console.print(f"  [red]Failed:[/red] {stats['failed']}")
+        console.print(f"  [dim]Skipped:[/dim] {stats['skipped']}")
+
+        # Show download path
+        download_path = db.get_metadata('download_path')
+        if download_path:
+            console.print(f"\n  Download path: {download_path}")
+        return
+
+    # Handle --clear flag
+    if clear_history:
+        if Confirm.ask("Clear all download history?", default=False):
+            deleted = db.clear_download_history()
+            console.print(f"[green]✓ Cleared {deleted} download records[/green]")
+        return
+
+    # Handle --update-metadata flag
+    if update_metadata:
+        try:
+            if not MUTAGEN_AVAILABLE:
+                console.print("[red]Error: mutagen library not installed.[/red]")
+                console.print("Install with: pip install mutagen")
+                return
+
+            # Get completed downloads
+            completed = db.get_downloads_by_status('completed')
+            if not completed:
+                console.print("[yellow]No completed downloads found.[/yellow]")
+                return
+
+            # Group by playlist and build work items
+            from collections import defaultdict
+
+            tracks_by_playlist = defaultdict(list)
+            for track in completed:
+                playlist_id = track.get('playlist_spotify_id') or 'unknown'
+                tracks_by_playlist[playlist_id].append(track)
+
+            # Build list of (file_path, playlist_name, position) work items
+            work_items = []
+            for playlist_id, tracks in tracks_by_playlist.items():
+                plist = db.get_playlist_selection(playlist_id) if playlist_id != 'unknown' else None
+                playlist_name = plist['name'] if plist else ''
+                for track in tracks:
+                    # Use stored position from database (falls back to 0 if not set)
+                    stored_position = track.get('position', 0)
+                    work_items.append({
+                        'file_path': track.get('file_path'),
+                        'playlist_name': playlist_name,
+                        'position': stored_position if stored_position > 0 else 1,
+                        'artist': track.get('artist', 'Unknown'),
+                        'title': track.get('title', 'Unknown'),
+                    })
+
+            console.print(f"[bold]Updating metadata on {len(work_items)} files (4 parallel workers)...[/bold]\n")
+
+            import subprocess
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            updated = 0
+            skipped = 0
+            errors = 0
+            timeouts = 0
+            error_details = []
+
+            def update_one_file(item):
+                """Update metadata for one file using subprocess with timeout."""
+                file_path = item['file_path']
+                playlist_name = item['playlist_name']
+                position = item['position']
+
+                if not file_path:
+                    return ('skipped', 'no path')
+                if not Path(file_path).exists():
+                    return ('skipped', 'not found')
+                if not playlist_name:
+                    return ('skipped', 'no playlist')
+
+                script = f'''
+import sys
+from mutagen.id3 import ID3, ID3NoHeaderError, TCOM, TRCK, TCMP
+from mutagen.mp3 import MP3
+try:
+    try:
+        tags = ID3({repr(file_path)})
+    except ID3NoHeaderError:
+        audio = MP3({repr(file_path)})
+        audio.add_tags()
+        audio.save()
+        tags = ID3({repr(file_path)})
+    tags.delall("TCOM")
+    tags.add(TCOM(encoding=3, text=[{repr(playlist_name)}]))
+    tags.delall("TRCK")
+    tags.add(TRCK(encoding=3, text=["{position}"]))
+    tags.delall("TCMP")
+    tags.add(TCMP(encoding=3, text=["1"]))
+    tags.save()
+except Exception as e:
+    print(str(e), file=sys.stderr)
+    sys.exit(1)
+'''
+                try:
+                    result = subprocess.run(
+                        [sys.executable, '-c', script],
+                        timeout=5,
+                        capture_output=True,
+                        text=True
+                    )
+                    if result.returncode == 0:
+                        return ('updated', None)
+                    else:
+                        return ('error', result.stderr.strip()[:60] if result.stderr else 'Unknown')
+                except subprocess.TimeoutExpired:
+                    return ('timeout', 'file locked or slow')
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TextColumn("[dim]{task.completed}/{task.total}[/dim]"),
+                console=console
+            ) as progress:
+                task = progress.add_task("Updating metadata...", total=len(work_items))
+
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    futures = {executor.submit(update_one_file, item): item for item in work_items}
+
+                    for future in as_completed(futures):
+                        item = futures[future]
+                        status, detail = future.result()
+
+                        if status == 'updated':
+                            updated += 1
+                        elif status == 'skipped':
+                            skipped += 1
+                        elif status == 'timeout':
+                            timeouts += 1
+                            error_details.append({
+                                'artist': item['artist'],
+                                'title': item['title'],
+                                'error': detail,
+                                'path': item['file_path']
+                            })
+                        else:
+                            errors += 1
+                            error_details.append({
+                                'artist': item['artist'],
+                                'title': item['title'],
+                                'error': detail,
+                                'path': item['file_path']
+                            })
+
+                        progress.update(task, advance=1, description=f"{item['artist'][:15]} - {item['title'][:20]}")
+
+            console.print()
+            console.print(f"[green]✓ Updated:[/green] {updated}")
+            console.print(f"[dim]⊘ Skipped:[/dim] {skipped}")
+            if timeouts:
+                console.print(f"[yellow]⏱ Timeouts:[/yellow] {timeouts}")
+            if errors:
+                console.print(f"[red]✗ Errors:[/red] {errors}")
+            if error_details and len(error_details) <= 10:
+                console.print("\n[bold]Failed files:[/bold]")
+                for e in error_details:
+                    console.print(f"  [dim]{e['artist'][:20]} - {e['title'][:25]}[/dim]: {e['error']}")
+            elif error_details:
+                from collections import Counter
+                error_types = Counter(e['error'].split(':')[0] if e['error'] else 'Unknown' for e in error_details)
+                console.print("\n[bold]Error breakdown:[/bold]")
+                for err_type, count in error_types.most_common():
+                    console.print(f"  {err_type}: {count}")
+            return
+        except Exception as e:
+            console.print(f"[red]Error updating metadata: {e}[/red]")
+            import traceback
+            traceback.print_exc()
+            return
+
+    # Handle --update-artwork flag
+    if update_artwork:
+        try:
+            if not MUTAGEN_AVAILABLE:
+                console.print("[red]Error: mutagen library not installed.[/red]")
+                console.print("Install with: pip install mutagen")
+                return
+
+            import requests
+            from mutagen.id3 import ID3, APIC, ID3NoHeaderError
+            from mutagen.mp3 import MP3
+
+            # Get completed downloads
+            completed = db.get_downloads_by_status('completed')
+            if not completed:
+                console.print("[yellow]No completed downloads found.[/yellow]")
+                return
+
+            # Filter to only tracks with file paths and deezer_ids
+            work_items = [t for t in completed if t.get('file_path') and t.get('deezer_id') and Path(t['file_path']).exists()]
+
+            if not work_items:
+                console.print("[yellow]No files found to update artwork.[/yellow]")
+                return
+
+            console.print(f"[bold]Updating artwork on {len(work_items)} files...[/bold]\n")
+
+            # Artwork size from deemix config (use 1400 as default high-res)
+            artwork_size = 1400
+
+            updated = 0
+            skipped = 0
+            errors = 0
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold blue]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                TextColumn("[dim]{task.completed}/{task.total}[/dim]"),
+                console=console
+            ) as progress:
+                task = progress.add_task("Updating artwork...", total=len(work_items))
+
+                for item in work_items:
+                    file_path = item['file_path']
+                    deezer_id = item['deezer_id']
+                    artist = item.get('artist', 'Unknown')[:15]
+                    title = item.get('title', 'Unknown')[:20]
+
+                    progress.update(task, description=f"{artist} - {title}")
+
+                    try:
+                        # Get track info from Deezer API to get album cover
+                        resp = requests.get(f"https://api.deezer.com/track/{deezer_id}", timeout=10)
+                        if resp.status_code != 200:
+                            skipped += 1
+                            progress.advance(task)
+                            continue
+
+                        track_data = resp.json()
+                        album_cover = track_data.get('album', {}).get('cover_xl')
+
+                        if not album_cover:
+                            # Try to construct high-res URL from md5
+                            md5 = track_data.get('album', {}).get('md5_image')
+                            if md5:
+                                album_cover = f"https://e-cdns-images.dzcdn.net/images/cover/{md5}/{artwork_size}x{artwork_size}-000000-80-0-0.jpg"
+
+                        if not album_cover:
+                            skipped += 1
+                            progress.advance(task)
+                            continue
+
+                        # Download the artwork
+                        img_resp = requests.get(album_cover, timeout=15)
+                        if img_resp.status_code != 200:
+                            skipped += 1
+                            progress.advance(task)
+                            continue
+
+                        artwork_data = img_resp.content
+
+                        # Update the MP3 file
+                        try:
+                            tags = ID3(file_path)
+                        except ID3NoHeaderError:
+                            audio = MP3(file_path)
+                            audio.add_tags()
+                            audio.save()
+                            tags = ID3(file_path)
+
+                        # Remove existing artwork
+                        tags.delall("APIC")
+
+                        # Add new high-res artwork
+                        tags.add(APIC(
+                            encoding=3,  # UTF-8
+                            mime='image/jpeg',
+                            type=3,  # Cover (front)
+                            desc='Cover',
+                            data=artwork_data
+                        ))
+
+                        tags.save()
+                        updated += 1
+
+                    except Exception as e:
+                        errors += 1
+
+                    progress.advance(task)
+
+            console.print()
+            console.print(f"[green]✓ Updated:[/green] {updated}")
+            console.print(f"[dim]⊘ Skipped:[/dim] {skipped}")
+            if errors:
+                console.print(f"[red]✗ Errors:[/red] {errors}")
+            return
+
+        except Exception as e:
+            console.print(f"[red]Error updating artwork: {e}[/red]")
+            import traceback
+            traceback.print_exc()
+            return
+
+    # Handle --set-path flag
+    if new_path:
+        path = Path(new_path).expanduser().resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        db.set_metadata('download_path', str(path))
+        console.print(f"[green]✓ Download path set to: {path}[/green]")
+        if not (playlist_name or retry_failed or force):
+            return
+
+    # Get or prompt for download path
+    download_path = output_path
+    if not download_path:
+        download_path = db.get_metadata('download_path')
+
+    if not download_path:
+        # First time - prompt for path
+        console.print("[bold cyan]🎵 First-time Download Setup[/bold cyan]\n")
+        console.print("Where should downloaded music be saved?\n")
+
+        default_path = str(get_default_download_path())
+        download_path = Prompt.ask(
+            "Download location",
+            default=default_path
+        )
+
+        # Save for future use
+        path = Path(download_path).expanduser().resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        db.set_metadata('download_path', str(path))
+        console.print(f"[green]✓ Download path saved: {path}[/green]\n")
+        download_path = str(path)
+
+    # Get ARL token
+    arl_token = os.environ.get('DEEZER_ARL')
+    if not arl_token:
+        console.print("[red]Error: Deezer ARL token not found.[/red]")
+        console.print("Run [cyan]musicdiff setup[/cyan] to configure Deezer credentials.")
+        sys.exit(1)
+
+    # Initialize downloader
+    try:
+        downloader = DeemixDownloader(
+            db=db,
+            arl_token=arl_token,
+            download_path=download_path,
+            quality=quality
+        )
+    except DeemixNotFoundError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        console.print("\n[bold]To install deemix:[/bold]")
+        console.print("  cd ~/Documents/deemix && pnpm install && pnpm build")
+        sys.exit(1)
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        sys.exit(1)
+
+    # Handle --retry-failed
+    if retry_failed:
+        failed = db.get_failed_downloads(max_attempts=3)
+        if not failed:
+            console.print("[green]No failed downloads to retry![/green]")
+            return
+
+        console.print(f"[bold]Retrying {len(failed)} failed downloads...[/bold]\n")
+
+        if dry_run:
+            for track in failed:
+                console.print(f"  Would retry: {track['artist']} - {track['title']}")
+            return
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console
+        ) as progress:
+            task = progress.add_task("Retrying downloads...", total=len(failed))
+
+            def progress_callback(current, total, track):
+                progress.update(task, completed=current,
+                               description=f"Retrying: {track.get('artist', '')} - {track.get('title', '')[:30]}")
+
+            stats = downloader.download_tracks(failed, progress_callback)
+
+        console.print(f"\n[green]✓ Retry complete: {stats.completed} succeeded, {stats.failed} failed[/green]")
+        return
+
+    # Handle --verify flag: check for missing files
+    if verify_files:
+        console.print("[bold]Verifying downloaded files...[/bold]\n")
+
+        # Get all completed downloads
+        conn = __import__('sqlite3').connect(db.db_path)
+        conn.row_factory = __import__('sqlite3').Row
+        cursor = conn.cursor()
+        completed = cursor.execute(
+            "SELECT deezer_id, artist, title, file_path FROM download_status WHERE status = 'completed'"
+        ).fetchall()
+        conn.close()
+
+        missing_count = 0
+        no_path_count = 0
+
+        for track in completed:
+            artist = track['artist'] or ''
+            title = track['title'] or ''
+            file_path = track['file_path']
+
+            if file_path:
+                # We have a stored path - check if file exists
+                if not Path(file_path).exists():
+                    db.update_download_status(track['deezer_id'], 'pending')
+                    missing_count += 1
+                    console.print(f"  [yellow]Missing:[/yellow] {artist} - {title}")
+            else:
+                # No path stored - can't verify, count but don't re-download
+                no_path_count += 1
+
+        if missing_count > 0:
+            console.print(f"\n[yellow]Found {missing_count} missing files - will re-download[/yellow]")
+        if no_path_count > 0:
+            console.print(f"[dim]({no_path_count} tracks have no stored path - run with --force to re-download all)[/dim]")
+        if missing_count == 0 and no_path_count == 0:
+            console.print("[green]All files verified - nothing missing![/green]")
+            return
+        if missing_count == 0:
+            console.print("[green]All verifiable files present![/green]")
+            return
+        console.print()
+
+    # Handle --scan flag: match existing files to database entries
+    if scan_files:
+        console.print("[bold]Scanning for existing files...[/bold]\n")
+        import glob as glob_module
+
+        # First, add tracks from selected playlists to download_status if not already there
+        selected_playlists = db.get_selected_playlists()
+        if selected_playlists:
+            try:
+                spotify = get_spotify_client()
+                new_tracks = 0
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[bold cyan]{task.description}"),
+                    console=console
+                ) as progress:
+                    task = progress.add_task("Loading playlists...", total=len(selected_playlists))
+                    for playlist in selected_playlists:
+                        progress.update(task, description=f"Loading: {playlist['name'][:30]}...", advance=1)
+                        try:
+                            full_playlist = spotify.fetch_playlist_by_id(playlist['spotify_id'])
+                            for i, track in enumerate(full_playlist.tracks):
+                                if not track.isrc:
+                                    continue
+                                # Look up by spotify_id since Spotify tracks don't have deezer_id
+                                existing = db.get_download_by_spotify_id(track.spotify_id) if track.spotify_id else None
+                                if not existing:
+                                    # Look up deezer_id from track cache by ISRC
+                                    cached = db.get_track_by_isrc(track.isrc) if track.isrc else None
+                                    deezer_id = cached.get('deezer_id') if cached else None
+                                    db.add_download_record(
+                                        deezer_id=deezer_id or f"spotify_{track.spotify_id}",
+                                        spotify_id=track.spotify_id,
+                                        isrc=track.isrc,
+                                        title=track.title,
+                                        artist=track.artist,
+                                        playlist_spotify_id=playlist['spotify_id'],
+                                        position=i + 1,
+                                        quality='320'
+                                    )
+                                    new_tracks += 1
+                                else:
+                                    # Update position for existing tracks (use deezer_id from db record)
+                                    db.update_download_position(existing['deezer_id'], i + 1)
+                        except Exception as e:
+                            console.print(f"[red]Error loading {playlist['name']}: {e}[/red]")
+                if new_tracks > 0:
+                    console.print(f"[green]Added {new_tracks} new tracks to database[/green]\n")
+            except Exception as e:
+                console.print(f"[red]Spotify error: {e}[/red]")
+
+        # Get all mp3 files in download path
+        search_pattern = str(Path(download_path) / '**' / '*.mp3')
+        all_files = glob_module.glob(search_pattern, recursive=True)
+        console.print(f"Found {len(all_files)} mp3 files in {download_path}\n")
+
+        if not all_files:
+            console.print("[yellow]No mp3 files found to scan.[/yellow]")
+            return
+
+        # Build a lookup structure for faster matching
+        # Key: (cleaned_filename_without_ext) -> full_path
+        def clean_for_match(s):
+            return ''.join(c for c in s.lower() if c.isalnum() or c == ' ').strip()
+
+        file_lookup = {}
+        for f in all_files:
+            stem = Path(f).stem  # filename without extension
+            clean_stem = clean_for_match(stem)
+            file_lookup[clean_stem] = f
+            # Also index by just the part after " - " (the title part)
+            if ' - ' in stem:
+                title_part = stem.split(' - ', 1)[1]
+                clean_title = clean_for_match(title_part)
+                if clean_title not in file_lookup:
+                    file_lookup[clean_title] = f
+
+        # Get all downloads (completed, pending, or failed) to try matching
+        conn = __import__('sqlite3').connect(db.db_path)
+        conn.row_factory = __import__('sqlite3').Row
+        cursor = conn.cursor()
+        tracks = cursor.execute(
+            "SELECT deezer_id, artist, title, file_path, status FROM download_status"
+        ).fetchall()
+        conn.close()
+
+        matched = 0
+        already_set = 0
+        not_found = 0
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TextColumn("[dim]{task.completed}/{task.total}[/dim]"),
+            console=console
+        ) as progress:
+            task = progress.add_task("Matching files...", total=len(tracks))
+
+            for i, track in enumerate(tracks):
+                artist = track['artist'] or ''
+                title = track['title'] or ''
+                existing_path = track['file_path']
+
+                progress.update(task, description=f"Scanning: {artist[:20]} - {title[:25]}", completed=i+1)
+
+                # Skip if already has a valid path
+                if existing_path and Path(existing_path).exists():
+                    already_set += 1
+                    continue
+
+                # Try to find matching file
+                primary_artist = artist.split(',')[0].strip()
+
+                # Method 1: Try "Artist - Title" pattern
+                search_key = clean_for_match(f"{primary_artist} - {title}")
+                if search_key in file_lookup:
+                    db.update_download_status(track['deezer_id'], 'completed', file_path=file_lookup[search_key])
+                    matched += 1
+                    continue
+
+                # Method 2: Try just the title
+                search_key = clean_for_match(title)
+                if search_key in file_lookup:
+                    db.update_download_status(track['deezer_id'], 'completed', file_path=file_lookup[search_key])
+                    matched += 1
+                    continue
+
+                # Method 3: Fuzzy match - check if artist and title words appear in any filename
+                found = False
+                artist_words = set(clean_for_match(primary_artist).split())
+                title_words = set(clean_for_match(title).split())
+                # Remove very short words
+                title_words = {w for w in title_words if len(w) > 2}
+
+                for clean_stem, file_path in file_lookup.items():
+                    stem_words = set(clean_stem.split())
+                    # Check if most artist words and title words are in filename
+                    artist_match = len(artist_words & stem_words) >= len(artist_words) * 0.5 if artist_words else True
+                    title_match = len(title_words & stem_words) >= len(title_words) * 0.6 if title_words else False
+
+                    if artist_match and title_match:
+                        db.update_download_status(track['deezer_id'], 'completed', file_path=file_path)
+                        matched += 1
+                        found = True
+                        break
+
+                if not found:
+                    not_found += 1
+
+        console.print(f"\n[green]✓ Matched:[/green] {matched} files")
+        console.print(f"[dim]⊘ Already set:[/dim] {already_set}")
+        console.print(f"[yellow]✗ Not found:[/yellow] {not_found}")
+
+        if matched > 0:
+            console.print(f"\n[green]Successfully linked {matched} existing files to database![/green]")
+        return
+
+    # Get tracks to download
+    # First, reset any stuck 'downloading' status
+    reset_count = db.reset_downloading_to_pending()
+    if reset_count > 0:
+        console.print(f"[dim]Reset {reset_count} interrupted downloads[/dim]")
+
+    # Get synced playlists to find tracks
+    synced_playlists = db.get_all_synced_playlists()
+    selected_playlists = db.get_selected_playlists()
+
+    if not selected_playlists:
+        console.print("[yellow]No playlists selected for sync.[/yellow]")
+        console.print("Run [cyan]musicdiff select[/cyan] to choose playlists first.")
+        return
+
+    # Filter by playlist name if specified
+    if playlist_name:
+        selected_playlists = [p for p in selected_playlists
+                             if playlist_name.lower() in p['name'].lower()]
+        if not selected_playlists:
+            console.print(f"[yellow]No playlist matching '{playlist_name}' found.[/yellow]")
+            return
+
+    # Queue tracks from selected playlists
+    console.print("[bold]Preparing download queue...[/bold]\n")
+
+    # Get Spotify client to fetch track details
+    try:
+        spotify = get_spotify_client()
+    except SystemExit:
+        return
+
+    total_queued = 0
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold cyan]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console
+    ) as progress:
+        task = progress.add_task("Loading tracks...", total=len(selected_playlists))
+
+        for playlist in selected_playlists:
+            progress.update(task, description=f"Loading: {playlist['name'][:40]}...")
+
+            # Fetch full playlist with tracks from Spotify
+            try:
+                full_playlist = spotify.fetch_playlist_by_id(playlist['spotify_id'])
+            except Exception as e:
+                console.print(f"[yellow]⚠ Failed to fetch {playlist['name']}: {e}[/yellow]")
+                progress.update(task, advance=1)
+                continue
+
+            # Queue tracks that have Deezer IDs
+            for i, track in enumerate(full_playlist.tracks):
+                # Look up Deezer ID from our track cache
+                cached = db.get_track_by_isrc(track.isrc) if track.isrc else None
+
+                if cached and cached.get('deezer_id'):
+                    # Check if already in queue
+                    existing = db.get_download_by_deezer_id(cached['deezer_id'])
+
+                    if existing:
+                        if existing.get('status') == 'completed':
+                            file_path = existing.get('file_path')
+                            # If file_path is set, verify it exists - if not, reset to pending
+                            if file_path and not Path(file_path).exists():
+                                db.update_download_status(cached['deezer_id'], 'pending')
+                                total_queued += 1
+                                continue
+                            # File exists (or no path stored) - skip unless --force
+                            if not force:
+                                continue
+                            # --force: reset to pending for re-download
+                            db.update_download_status(cached['deezer_id'], 'pending')
+                            total_queued += 1
+                            continue
+                        # Skip if already queued (pending/downloading/failed)
+                        continue
+
+                    # Add to download queue
+                    db.add_download_record(
+                        deezer_id=cached['deezer_id'],
+                        spotify_id=track.spotify_id,
+                        isrc=track.isrc,
+                        title=track.title,
+                        artist=track.artist,
+                        playlist_spotify_id=playlist['spotify_id'],
+                        position=i + 1,
+                        quality=quality
+                    )
+                    total_queued += 1
+
+            progress.update(task, advance=1)
+
+    if total_queued == 0:
+        # Check if there are pending downloads
+        pending = db.get_pending_downloads()
+        if pending:
+            console.print(f"[cyan]Found {len(pending)} tracks already in queue[/cyan]")
+        else:
+            console.print("[green]All tracks already downloaded or no Deezer matches found![/green]")
+            console.print("[dim]Run 'musicdiff sync' first to match tracks with Deezer.[/dim]")
+            return
+    else:
+        console.print(f"[green]✓ Queued {total_queued} new tracks for download[/green]")
+
+    # Get pending downloads
+    pending = db.get_pending_downloads()
+
+    if not pending:
+        console.print("[green]Nothing to download![/green]")
+        return
+
+    console.print(f"\n[bold]Ready to download {len(pending)} tracks[/bold]")
+    console.print(f"  Quality: {quality}")
+    console.print(f"  Location: {download_path}\n")
+
+    if dry_run:
+        console.print("[dim]DRY RUN - Would download:[/dim]\n")
+        for i, track in enumerate(pending[:20]):  # Show first 20
+            console.print(f"  {i+1}. {track['artist']} - {track['title']}")
+        if len(pending) > 20:
+            console.print(f"  ... and {len(pending) - 20} more")
+        return
+
+    # Confirm download
+    if not Confirm.ask(f"Start downloading {len(pending)} tracks?", default=True):
+        console.print("[yellow]Download cancelled[/yellow]")
+        return
+
+    # Download with progress
+    # Group tracks by playlist for correct metadata tagging
+    from collections import defaultdict
+    tracks_by_playlist = defaultdict(list)
+    for track in pending:
+        playlist_id = track.get('playlist_spotify_id') or 'unknown'
+        tracks_by_playlist[playlist_id].append(track)
+
+    console.print()
+
+    # Get playlist names
+    playlist_names = {}
+    for playlist_id in tracks_by_playlist.keys():
+        if playlist_id != 'unknown':
+            plist = db.get_playlist_selection(playlist_id)
+            if plist:
+                playlist_names[playlist_id] = plist.get('name', '')
+
+    total_tracks = len(pending)
+    completed_count = 0
+    all_stats = DownloadStats()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TextColumn("[dim]{task.completed}/{task.total}[/dim]"),
+        console=console
+    ) as progress:
+        task = progress.add_task("Downloading...", total=total_tracks)
+
+        # Download each playlist group with correct positions
+        for playlist_id, tracks in tracks_by_playlist.items():
+            playlist_name = playlist_names.get(playlist_id, '')
+
+            # Create playlist-specific folder
+            if playlist_name:
+                folder_name = sanitize_folder_name(playlist_name)
+                playlist_folder = Path(download_path) / folder_name
+                playlist_folder.mkdir(parents=True, exist_ok=True)
+                downloader.set_download_path(str(playlist_folder))
+            else:
+                # Fallback to base download path if no playlist name
+                downloader.set_download_path(download_path)
+
+            # Add position to each track for metadata
+            for idx, track in enumerate(tracks):
+                track['_playlist_position'] = idx + 1
+
+            def progress_callback(current, total, track):
+                nonlocal completed_count
+                completed_count += 1
+                artist = track.get('artist', 'Unknown')[:20]
+                title = track.get('title', 'Unknown')[:30]
+                progress.update(task, completed=completed_count,
+                               description=f"Downloading: {artist} - {title}")
+
+            stats = downloader.download_tracks(
+                tracks,
+                progress_callback,
+                playlist_name=playlist_name,
+                apply_playlist_tags=True
+            )
+
+            all_stats.completed += stats.completed
+            all_stats.failed += stats.failed
+            all_stats.skipped += stats.skipped
+            all_stats.errors.extend(stats.errors)
+
+    stats = all_stats
+
+    # Show summary
+    console.print()
+    console.print("[bold]Download Complete![/bold]\n")
+    console.print(f"  [green]✓ Completed:[/green] {stats.completed}")
+    console.print(f"  [red]✗ Failed:[/red] {stats.failed}")
+    console.print(f"  [dim]⊘ Skipped:[/dim] {stats.skipped}")
+
+    if stats.errors:
+        console.print("\n[bold red]Errors:[/bold red]")
+        for error in stats.errors[:5]:  # Show first 5 errors
+            console.print(f"  • {error}")
+        if len(stats.errors) > 5:
+            console.print(f"  ... and {len(stats.errors) - 5} more errors")
+        console.print("\n[dim]Run 'musicdiff download --retry-failed' to retry[/dim]")
+
+    if stats.completed > 0:
+        console.print(f"\n[green]🎵 {stats.completed} tracks saved to {download_path}[/green]")
+
+        # Auto-run scan and metadata update after successful download
+        if not no_auto_scan:
+            console.print("\n[bold]Auto-scanning downloaded files...[/bold]")
+            _run_scan(db, download_path, console)
+
+        if not no_auto_metadata:
+            console.print("\n[bold]Auto-updating metadata...[/bold]")
+            _run_metadata_update(db, console)
+
+
+def _run_scan(db, download_path, console):
+    """Scan download folder and match files to database entries."""
+    import glob as glob_module
+
+    # Get all mp3 files in download path
+    search_pattern = str(Path(download_path) / '**' / '*.mp3')
+    all_files = glob_module.glob(search_pattern, recursive=True)
+
+    if not all_files:
+        console.print("[dim]No mp3 files found to scan.[/dim]")
+        return
+
+    # Build a lookup structure for faster matching
+    def clean_for_match(s):
+        return ''.join(c for c in s.lower() if c.isalnum() or c == ' ').strip()
+
+    file_lookup = {}
+    for f in all_files:
+        stem = Path(f).stem
+        clean_stem = clean_for_match(stem)
+        file_lookup[clean_stem] = f
+        if ' - ' in stem:
+            title_part = stem.split(' - ', 1)[1]
+            clean_title = clean_for_match(title_part)
+            if clean_title not in file_lookup:
+                file_lookup[clean_title] = f
+
+    # Get all downloads to try matching
+    conn = __import__('sqlite3').connect(db.db_path)
+    conn.row_factory = __import__('sqlite3').Row
+    cursor = conn.cursor()
+    tracks = cursor.execute(
+        "SELECT deezer_id, artist, title, file_path, status FROM download_status"
+    ).fetchall()
+    conn.close()
+
+    matched = 0
+
+    for track in tracks:
+        artist = track['artist'] or ''
+        title = track['title'] or ''
+        existing_path = track['file_path']
+
+        # Skip if already has a valid path
+        if existing_path and Path(existing_path).exists():
+            continue
+
+        primary_artist = artist.split(',')[0].strip()
+
+        # Try "Artist - Title" pattern
+        search_key = clean_for_match(f"{primary_artist} - {title}")
+        if search_key in file_lookup:
+            db.update_download_status(track['deezer_id'], 'completed', file_path=file_lookup[search_key])
+            matched += 1
+            continue
+
+        # Try just the title
+        search_key = clean_for_match(title)
+        if search_key in file_lookup:
+            db.update_download_status(track['deezer_id'], 'completed', file_path=file_lookup[search_key])
+            matched += 1
+
+    if matched > 0:
+        console.print(f"[green]✓ Matched {matched} files to database[/green]")
+
+
+def _run_metadata_update(db, console):
+    """Update metadata on completed downloads."""
+    if not MUTAGEN_AVAILABLE:
+        console.print("[yellow]Skipping metadata update (mutagen not installed)[/yellow]")
+        return
+
+    from collections import defaultdict
+    import subprocess
+
+    # Get completed downloads
+    completed = db.get_downloads_by_status('completed')
+    if not completed:
+        return
+
+    # Group by playlist and build work items
+    tracks_by_playlist = defaultdict(list)
+    for track in completed:
+        playlist_id = track.get('playlist_spotify_id') or 'unknown'
+        tracks_by_playlist[playlist_id].append(track)
+
+    # Build list of work items
+    work_items = []
+    for playlist_id, tracks in tracks_by_playlist.items():
+        plist = db.get_playlist_selection(playlist_id) if playlist_id != 'unknown' else None
+        playlist_name = plist['name'] if plist else ''
+        for track in tracks:
+            stored_position = track.get('position', 0)
+            file_path = track.get('file_path')
+            if file_path and Path(file_path).exists() and playlist_name:
+                work_items.append({
+                    'file_path': file_path,
+                    'playlist_name': playlist_name,
+                    'position': stored_position if stored_position > 0 else 1,
+                })
+
+    if not work_items:
+        return
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    updated = 0
+
+    def update_one_file(item):
+        file_path = item['file_path']
+        playlist_name = item['playlist_name']
+        position = item['position']
+
+        script = f'''
+import sys
+from mutagen.id3 import ID3, ID3NoHeaderError, TCOM, TRCK, TCMP
+from mutagen.mp3 import MP3
+try:
+    try:
+        tags = ID3({repr(file_path)})
+    except ID3NoHeaderError:
+        audio = MP3({repr(file_path)})
+        audio.add_tags()
+        audio.save()
+        tags = ID3({repr(file_path)})
+    tags.delall("TCOM")
+    tags.add(TCOM(encoding=3, text=[{repr(playlist_name)}]))
+    tags.delall("TRCK")
+    tags.add(TRCK(encoding=3, text=["{position}"]))
+    tags.delall("TCMP")
+    tags.add(TCMP(encoding=3, text=["1"]))
+    tags.save()
+except Exception as e:
+    print(str(e), file=sys.stderr)
+    sys.exit(1)
+'''
+        try:
+            result = subprocess.run(
+                [sys.executable, '-c', script],
+                timeout=5,
+                capture_output=True,
+                text=True
+            )
+            return result.returncode == 0
+        except subprocess.TimeoutExpired:
+            return False
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(update_one_file, item) for item in work_items]
+        for future in as_completed(futures):
+            if future.result():
+                updated += 1
+
+    if updated > 0:
+        console.print(f"[green]✓ Updated metadata on {updated} files[/green]")
 
 
 @cli.command()

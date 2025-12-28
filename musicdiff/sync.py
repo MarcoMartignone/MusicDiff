@@ -9,6 +9,7 @@ from typing import List, Tuple
 from enum import Enum
 import time
 
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from musicdiff.matcher import TrackMatcher
 
 
@@ -120,6 +121,13 @@ class SyncEngine:
                         if existing_id:
                             # Found another playlist with same name - will update it
                             to_update.append((name, track_count, existing_id))
+                            # IMMEDIATELY update database with new Deezer ID to prevent sync issues
+                            self.db.upsert_synced_playlist(
+                                spotify_id=spotify_id,
+                                deezer_id=existing_id,
+                                name=name,
+                                track_count=track_count
+                            )
                         else:
                             # No existing playlist found - will create new
                             to_create.append((name, track_count))
@@ -129,6 +137,13 @@ class SyncEngine:
                     if existing_id:
                         # Found existing playlist with same name - will update it
                         to_update.append((name, track_count, existing_id))
+                        # IMMEDIATELY update database with new Deezer ID to prevent sync issues
+                        self.db.upsert_synced_playlist(
+                            spotify_id=spotify_id,
+                            deezer_id=existing_id,
+                            name=name,
+                            track_count=track_count
+                        )
                     else:
                         # No existing playlist found - will create new
                         to_create.append((name, track_count))
@@ -143,58 +158,80 @@ class SyncEngine:
             # For playlists marked to update, check if they actually need updating
             # by comparing Spotify vs Deezer track lists
             if to_update and not to_create and not to_delete:
-                self.ui.print_info("📊 Comparing playlists to detect changes...")
-
                 # Fetch Spotify playlists to compare
                 spotify_playlists_map = {}
-                for spotify_id in spotify_playlist_ids:
-                    try:
-                        sp_playlist = self.spotify.fetch_playlist_by_id(spotify_id)
-                        if sp_playlist:
-                            spotify_playlists_map[sp_playlist.spotify_id] = sp_playlist
-                    except Exception:
-                        pass  # If fetch fails, we'll sync anyway to be safe
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[bold blue]{task.description}"),
+                    BarColumn(),
+                    TaskProgressColumn(),
+                    console=self.ui.console
+                ) as progress:
+                    task = progress.add_task("Fetching Spotify playlists...", total=len(spotify_playlist_ids))
+                    for spotify_id in spotify_playlist_ids:
+                        try:
+                            sp_playlist = self.spotify.fetch_playlist_by_id(spotify_id)
+                            if sp_playlist:
+                                spotify_playlists_map[sp_playlist.spotify_id] = sp_playlist
+                                progress.update(task, description=f"Fetched: {sp_playlist.name[:30]}")
+                        except Exception:
+                            pass  # If fetch fails, we'll sync anyway to be safe
+                        progress.advance(task)
 
                 # Check each playlist for actual changes
                 actually_need_update = []
-                for name, track_count, deezer_id in to_update:
-                    # Find the corresponding Spotify playlist
-                    spotify_playlist = None
-                    for sp_id, sp_pl in spotify_playlists_map.items():
-                        if sp_pl.name == name:
-                            spotify_playlist = sp_pl
-                            break
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[bold blue]{task.description}"),
+                    BarColumn(),
+                    TaskProgressColumn(),
+                    console=self.ui.console
+                ) as progress:
+                    task = progress.add_task("Comparing playlists...", total=len(to_update))
+                    for name, track_count, deezer_id in to_update:
+                        progress.update(task, description=f"Comparing: {name[:30]}")
 
-                    if not spotify_playlist:
-                        # Can't compare, assume needs update
-                        actually_need_update.append((name, track_count, deezer_id))
-                        continue
+                        # Find the corresponding Spotify playlist
+                        spotify_playlist = None
+                        for sp_id, sp_pl in spotify_playlists_map.items():
+                            if sp_pl.name == name:
+                                spotify_playlist = sp_pl
+                                break
 
-                    # Fetch Deezer playlist
-                    try:
-                        deezer_playlist = self._fetch_deezer_playlist(deezer_id)
-                        if not deezer_playlist:
-                            # Can't fetch, assume needs update
+                        if not spotify_playlist:
+                            # Can't compare, assume needs update
                             actually_need_update.append((name, track_count, deezer_id))
+                            progress.advance(task)
                             continue
 
-                        # Compare track counts first (fast check)
-                        if len(spotify_playlist.tracks) != len(deezer_playlist.tracks):
+                        # Fetch Deezer playlist
+                        try:
+                            deezer_playlist = self._fetch_deezer_playlist(deezer_id)
+                            if not deezer_playlist:
+                                # Can't fetch, assume needs update
+                                actually_need_update.append((name, track_count, deezer_id))
+                                progress.advance(task)
+                                continue
+
+                            # Compare tracks by ISRC to find missing tracks
+                            # Normalize ISRCs to uppercase for case-insensitive comparison
+                            spotify_isrcs = {t.isrc.upper() for t in spotify_playlist.tracks if t.isrc}
+                            deezer_isrcs = {t.isrc.upper() for t in deezer_playlist.tracks if t.isrc}
+
+                            # Count tracks in Spotify but not in Deezer
+                            missing_isrcs = spotify_isrcs - deezer_isrcs
+                            missing_count = len(missing_isrcs)
+
+                            if missing_count > 0:
+                                # Show missing count, not total
+                                actually_need_update.append((name, missing_count, deezer_id))
+                            # else: All tracks already exist, skip it
+
+                        except Exception:
+                            # If comparison fails, assume needs update to be safe
                             actually_need_update.append((name, track_count, deezer_id))
-                            continue
 
-                        # Compare tracks by ISRC (reliable cross-platform identifier)
-                        spotify_isrcs = [t.isrc for t in spotify_playlist.tracks if t.isrc]
-                        deezer_isrcs = [t.isrc for t in deezer_playlist.tracks if t.isrc]
-
-                        if spotify_isrcs != deezer_isrcs:
-                            # Tracks are different
-                            actually_need_update.append((name, track_count, deezer_id))
-                        # else: Playlists are identical, skip it
-
-                    except Exception:
-                        # If comparison fails, assume needs update to be safe
-                        actually_need_update.append((name, track_count, deezer_id))
+                        progress.advance(task)
 
                 to_update = actually_need_update
 
@@ -433,6 +470,14 @@ class SyncEngine:
             public=False  # Always create private playlists to ensure they're accessible
         )
 
+        # IMMEDIATELY save to database to prevent ID mismatch on interrupted syncs
+        self.db.upsert_synced_playlist(
+            spotify_id=spotify_playlist.spotify_id,
+            deezer_id=deezer_id,
+            name=spotify_playlist.name,
+            track_count=len(spotify_playlist.tracks) if spotify_playlist.tracks else 0
+        )
+
         # Add tracks
         match_stats = {'total': 0, 'matched': 0, 'failed': 0}
         if spotify_playlist.tracks:
@@ -507,29 +552,38 @@ class SyncEngine:
             else:
                 print(f"[DEBUG] Failed to fetch Deezer playlist (returned None)")
 
+        # Get existing Deezer track ISRCs for comparison
+        # Normalize ISRCs to uppercase for case-insensitive comparison
+        existing_isrcs = set()
         if deezer_playlist and deezer_playlist.tracks:
-            # Remove all current tracks
-            current_track_ids = [t.deezer_id for t in deezer_playlist.tracks if t.deezer_id]
-            if current_track_ids:
-                if os.environ.get('DEBUG'):
-                    print(f"[DEBUG] Removing {len(current_track_ids)} existing tracks from playlist...")
-
-                remove_success = self.deezer.remove_tracks_from_playlist(deezer_id, current_track_ids)
-
-                if os.environ.get('DEBUG'):
-                    print(f"[DEBUG] Remove operation returned: {remove_success}")
-
-                if not remove_success:
-                    self.ui.print_warning(f"Failed to remove existing tracks from playlist")
-        else:
+            existing_isrcs = {t.isrc.upper() for t in deezer_playlist.tracks if t.isrc}
             if os.environ.get('DEBUG'):
-                print(f"[DEBUG] Skipping remove - playlist has no tracks to remove")
+                print(f"[DEBUG] Found {len(existing_isrcs)} existing tracks on Deezer (by ISRC)")
 
-        # Add tracks from Spotify
+        # Find tracks that are missing from Deezer (incremental sync)
         match_stats = {'total': 0, 'matched': 0, 'failed': 0}
         if spotify_playlist.tracks:
+            # Filter to only tracks not already on Deezer (case-insensitive ISRC comparison)
+            missing_tracks = [t for t in spotify_playlist.tracks if t.isrc and t.isrc.upper() not in existing_isrcs]
+
+            if os.environ.get('DEBUG'):
+                print(f"[DEBUG] {len(missing_tracks)} tracks missing from Deezer (out of {len(spotify_playlist.tracks)} total)")
+
+            if not missing_tracks:
+                if os.environ.get('DEBUG'):
+                    print(f"[DEBUG] All tracks already exist on Deezer - nothing to add")
+                # Update tracking with current count
+                self.db.upsert_synced_playlist(
+                    spotify_id=spotify_playlist.spotify_id,
+                    deezer_id=deezer_id,
+                    name=spotify_playlist.name,
+                    track_count=len(spotify_playlist.tracks)
+                )
+                return match_stats
+
+            # Only match and add the missing tracks
             track_ids, match_stats = self._match_tracks_to_deezer(
-                spotify_playlist.tracks,
+                missing_tracks,
                 spotify_playlist.name
             )
             if track_ids:
@@ -560,12 +614,28 @@ class SyncEngine:
                         if os.environ.get('DEBUG'):
                             print(f"[DEBUG] Recreated playlist with new ID: {new_deezer_id}")
 
+                        # IMMEDIATELY update database with new ID before adding tracks
+                        # This prevents ID mismatch if track addition fails or is interrupted
+                        deezer_id = new_deezer_id
+                        self.db.upsert_synced_playlist(
+                            spotify_id=spotify_playlist.spotify_id,
+                            deezer_id=new_deezer_id,
+                            name=spotify_playlist.name,
+                            track_count=len(spotify_playlist.tracks)
+                        )
+
                         # Try adding tracks to the new playlist
                         add_success = self.deezer.add_tracks_to_playlist(new_deezer_id, track_ids)
 
                         if add_success:
-                            # Update database with new playlist ID
+                            # Update database IMMEDIATELY with new playlist ID
                             deezer_id = new_deezer_id
+                            self.db.upsert_synced_playlist(
+                                spotify_id=spotify_playlist.spotify_id,
+                                deezer_id=new_deezer_id,
+                                name=spotify_playlist.name,
+                                track_count=len(spotify_playlist.tracks)
+                            )
                             self.ui.print_success(f"Recovery successful - recreated playlist '{spotify_playlist.name}'")
                         else:
                             self.ui.print_error(f"Failed to add tracks even after recreating playlist '{spotify_playlist.name}'")
@@ -718,11 +788,23 @@ class SyncEngine:
                 failed_tracks.append((sp_track.title, sp_track.artist, "Not found on Deezer"))
                 self.ui.console.print(f"  [yellow]⚠[/yellow] [dim]{display_artist} - {display_title} (not found)[/dim]")
 
+        # Deduplicate track IDs while preserving order (Deezer rejects duplicates)
+        seen = set()
+        unique_deezer_ids = []
+        duplicates_removed = 0
+        for track_id in deezer_ids:
+            if track_id not in seen:
+                seen.add(track_id)
+                unique_deezer_ids.append(track_id)
+            else:
+                duplicates_removed += 1
+
         stats = {
             'total': total,
             'matched': matched,
             'failed': failed,
-            'failed_tracks': failed_tracks
+            'failed_tracks': failed_tracks,
+            'duplicates_removed': duplicates_removed
         }
 
         # Show summary
@@ -731,7 +813,10 @@ class SyncEngine:
         else:
             self.ui.console.print(f"  [green]✓ All {matched} tracks matched successfully![/green]\n")
 
-        return deezer_ids, stats
+        if duplicates_removed > 0:
+            self.ui.console.print(f"  [dim]ℹ {duplicates_removed} duplicate track(s) removed[/dim]\n")
+
+        return unique_deezer_ids, stats
 
     def _delete_deselected_playlists(self, selected_ids: List[str]) -> int:
         """Delete playlists from Deezer that are no longer selected.

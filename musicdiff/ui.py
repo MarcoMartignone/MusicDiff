@@ -292,9 +292,9 @@ class UI:
 
         if to_update:
             self.console.print(f"[bold yellow]🔄 Will Update on Deezer ({len(to_update)} playlists):[/bold yellow]")
-            self.console.print("[dim]  (Full overwrite - all tracks will be replaced with Spotify version)[/dim]")
+            self.console.print("[dim]  (Incremental - only missing tracks will be added)[/dim]")
             for name, track_count, deezer_id in to_update:
-                self.console.print(f"  [yellow]~[/yellow] {name} [dim]({track_count} tracks)[/dim]")
+                self.console.print(f"  [yellow]~[/yellow] {name} [dim]({track_count} missing)[/dim]")
             self.console.print()
 
         if to_delete:

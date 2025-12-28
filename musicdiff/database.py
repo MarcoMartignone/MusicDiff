@@ -123,6 +123,18 @@ class Database:
                 conn.commit()
                 print("sync_log migration complete!")
 
+        # Check if download_status table needs position column
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='download_status'")
+        download_status_exists = cursor.fetchone() is not None
+
+        if download_status_exists:
+            has_position = self._column_exists(cursor, 'download_status', 'position')
+            if not has_position:
+                print("Adding position column to download_status table...")
+                cursor.execute("ALTER TABLE download_status ADD COLUMN position INTEGER DEFAULT 0")
+                conn.commit()
+                print("download_status migration complete!")
+
     def init_schema(self):
         """Initialize database schema."""
         conn = sqlite3.connect(self.db_path)
@@ -206,10 +218,36 @@ class Database:
             )
         """)
 
+        # Download status table - tracks download state for individual tracks
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS download_status (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                deezer_id TEXT NOT NULL UNIQUE,
+                spotify_id TEXT,
+                isrc TEXT,
+                title TEXT NOT NULL,
+                artist TEXT NOT NULL,
+                playlist_spotify_id TEXT,
+                position INTEGER DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'pending',
+                quality TEXT DEFAULT '320',
+                file_path TEXT,
+                error_message TEXT,
+                attempts INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                completed_at TIMESTAMP
+            )
+        """)
+
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_download_deezer ON download_status(deezer_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_download_status ON download_status(status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_download_playlist ON download_status(playlist_spotify_id)")
+
         # Initialize schema version
         cursor.execute("""
             INSERT OR IGNORE INTO metadata (key, value)
-            VALUES ('schema_version', '2')
+            VALUES ('schema_version', '3')
         """)
 
         conn.commit()
@@ -378,6 +416,20 @@ class Database:
 
         conn.close()
         return [dict(row) for row in results]
+
+    def get_playlist_selection(self, spotify_id: str) -> Optional[Dict]:
+        """Get a playlist selection by Spotify ID."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        result = cursor.execute(
+            "SELECT * FROM playlist_selections WHERE spotify_id = ?",
+            (spotify_id,)
+        ).fetchone()
+
+        conn.close()
+        return dict(result) if result else None
 
     def update_playlist_selection(self, spotify_id: str, selected: bool) -> None:
         """Update playlist selection status.
@@ -548,6 +600,309 @@ class Database:
             logs.append(log)
 
         return logs
+
+    # Download status operations
+
+    def add_download_record(self, deezer_id: str, spotify_id: str = None, isrc: str = None,
+                            title: str = '', artist: str = '', playlist_spotify_id: str = None,
+                            position: int = 0, quality: str = '320') -> None:
+        """Add a new download record or update existing one.
+
+        Args:
+            deezer_id: Deezer track ID
+            spotify_id: Spotify track ID (optional)
+            isrc: ISRC code (optional)
+            title: Track title
+            artist: Track artist
+            playlist_spotify_id: Spotify playlist ID (optional)
+            position: Position in playlist (1-based)
+            quality: Download quality (128, 320, flac)
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT INTO download_status (deezer_id, spotify_id, isrc, title, artist,
+                                         playlist_spotify_id, position, quality, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+            ON CONFLICT(deezer_id) DO UPDATE SET
+                spotify_id = COALESCE(excluded.spotify_id, spotify_id),
+                isrc = COALESCE(excluded.isrc, isrc),
+                title = excluded.title,
+                artist = excluded.artist,
+                playlist_spotify_id = COALESCE(excluded.playlist_spotify_id, playlist_spotify_id),
+                position = excluded.position,
+                quality = excluded.quality,
+                updated_at = CURRENT_TIMESTAMP
+        """, (deezer_id, spotify_id, isrc, title, artist, playlist_spotify_id, position, quality))
+
+        conn.commit()
+        conn.close()
+
+    def update_download_status(self, deezer_id: str, status: str, file_path: str = None,
+                               error_message: str = None) -> None:
+        """Update download status for a track.
+
+        Args:
+            deezer_id: Deezer track ID
+            status: New status (pending, downloading, completed, failed, skipped)
+            file_path: Path to downloaded file (optional)
+            error_message: Error message if failed (optional)
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        if status == 'completed':
+            cursor.execute("""
+                UPDATE download_status
+                SET status = ?, file_path = ?, error_message = NULL,
+                    updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP
+                WHERE deezer_id = ?
+            """, (status, file_path, deezer_id))
+        else:
+            cursor.execute("""
+                UPDATE download_status
+                SET status = ?, file_path = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE deezer_id = ?
+            """, (status, file_path, error_message, deezer_id))
+
+        conn.commit()
+        conn.close()
+
+    def update_download_position(self, deezer_id: str, position: int) -> None:
+        """Update position for a track in download_status.
+
+        Args:
+            deezer_id: Deezer track ID
+            position: New position (1-based)
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE download_status
+            SET position = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE deezer_id = ?
+        """, (position, deezer_id))
+        conn.commit()
+        conn.close()
+
+    def get_pending_downloads(self, playlist_spotify_id: str = None) -> List[Dict]:
+        """Get all pending downloads, optionally filtered by playlist.
+
+        Args:
+            playlist_spotify_id: Filter by playlist (optional)
+
+        Returns:
+            List of pending download records
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        if playlist_spotify_id:
+            results = cursor.execute("""
+                SELECT * FROM download_status
+                WHERE status = 'pending' AND playlist_spotify_id = ?
+                ORDER BY created_at
+            """, (playlist_spotify_id,)).fetchall()
+        else:
+            results = cursor.execute("""
+                SELECT * FROM download_status
+                WHERE status = 'pending'
+                ORDER BY created_at
+            """).fetchall()
+
+        conn.close()
+        return [dict(row) for row in results]
+
+    def get_failed_downloads(self, max_attempts: int = 3) -> List[Dict]:
+        """Get failed downloads that haven't exceeded max retry attempts.
+
+        Args:
+            max_attempts: Maximum number of attempts before giving up
+
+        Returns:
+            List of failed download records eligible for retry
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        results = cursor.execute("""
+            SELECT * FROM download_status
+            WHERE status = 'failed' AND attempts < ?
+            ORDER BY updated_at
+        """, (max_attempts,)).fetchall()
+
+        conn.close()
+        return [dict(row) for row in results]
+
+    def get_download_by_deezer_id(self, deezer_id: str) -> Optional[Dict]:
+        """Get download record by Deezer ID.
+
+        Args:
+            deezer_id: Deezer track ID
+
+        Returns:
+            Download record or None
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        result = cursor.execute(
+            "SELECT * FROM download_status WHERE deezer_id = ?",
+            (deezer_id,)
+        ).fetchone()
+
+        conn.close()
+        return dict(result) if result else None
+
+    def get_download_by_spotify_id(self, spotify_id: str) -> Optional[Dict]:
+        """Get download record by Spotify ID.
+
+        Args:
+            spotify_id: Spotify track ID
+
+        Returns:
+            Download record or None
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        result = cursor.execute(
+            "SELECT * FROM download_status WHERE spotify_id = ?",
+            (spotify_id,)
+        ).fetchone()
+
+        conn.close()
+        return dict(result) if result else None
+
+    def increment_download_attempts(self, deezer_id: str) -> None:
+        """Increment the attempt counter for a download.
+
+        Args:
+            deezer_id: Deezer track ID
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            UPDATE download_status
+            SET attempts = attempts + 1, updated_at = CURRENT_TIMESTAMP
+            WHERE deezer_id = ?
+        """, (deezer_id,))
+
+        conn.commit()
+        conn.close()
+
+    def mark_download_complete(self, deezer_id: str, file_path: str) -> None:
+        """Mark a download as completed.
+
+        Args:
+            deezer_id: Deezer track ID
+            file_path: Path to the downloaded file
+        """
+        self.update_download_status(deezer_id, 'completed', file_path=file_path)
+
+    def get_download_stats(self) -> Dict:
+        """Get download statistics.
+
+        Returns:
+            Dict with counts: pending, downloading, completed, failed, skipped, total
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        result = cursor.execute("""
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
+                SUM(CASE WHEN status = 'downloading' THEN 1 ELSE 0 END) as downloading,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+                SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) as skipped
+            FROM download_status
+        """).fetchone()
+
+        conn.close()
+
+        return {
+            'total': result[0] or 0,
+            'pending': result[1] or 0,
+            'downloading': result[2] or 0,
+            'completed': result[3] or 0,
+            'failed': result[4] or 0,
+            'skipped': result[5] or 0
+        }
+
+    def get_downloads_by_status(self, status: str) -> List[Dict]:
+        """Get all downloads with a specific status.
+
+        Args:
+            status: Status to filter by (pending, downloading, completed, failed, skipped)
+
+        Returns:
+            List of download records
+        """
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        results = cursor.execute("""
+            SELECT * FROM download_status
+            WHERE status = ?
+            ORDER BY updated_at DESC
+        """, (status,)).fetchall()
+
+        conn.close()
+        return [dict(row) for row in results]
+
+    def clear_download_history(self, status: str = None) -> int:
+        """Clear download history.
+
+        Args:
+            status: Only clear records with this status (optional).
+                    If None, clears all records.
+
+        Returns:
+            Number of records deleted
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        if status:
+            cursor.execute("DELETE FROM download_status WHERE status = ?", (status,))
+        else:
+            cursor.execute("DELETE FROM download_status")
+
+        deleted = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return deleted
+
+    def reset_downloading_to_pending(self) -> int:
+        """Reset any 'downloading' status back to 'pending'.
+
+        Useful for recovering from interrupted downloads.
+
+        Returns:
+            Number of records reset
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            UPDATE download_status
+            SET status = 'pending', updated_at = CURRENT_TIMESTAMP
+            WHERE status = 'downloading'
+        """)
+
+        reset = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return reset
 
     def close(self):
         """Close database connection."""

@@ -383,12 +383,16 @@ class DeezerClient:
         if not self.user_id:
             raise RuntimeError("Not authenticated. Call authenticate() first.")
 
-        # Batch size - Deezer seems to have issues with large batches
-        # Start with 50 tracks per batch as a safe limit
-        batch_size = 50
+        # Batch size - Deezer has strict rate limits, use smaller batches
+        # with delays to avoid quota errors
+        batch_size = 20  # Smaller batches for reliability
+        batch_delay = 2.5  # Longer delay between batches to avoid rate limits
 
         if self.debug:
-            print(f"\n[DEBUG] Adding {len(track_ids)} tracks in batches of {batch_size}...")
+            print(f"\n[DEBUG] Adding {len(track_ids)} tracks in batches of {batch_size} (with {batch_delay}s delay)...")
+
+        failed_batches = 0
+        successful_batches = 0
 
         # Process tracks in batches
         for i in range(0, len(track_ids), batch_size):
@@ -433,27 +437,48 @@ class DeezerClient:
                 # Check for errors - empty array or dict means success
                 error = response_data.get('error')
                 if error and (isinstance(error, dict) or (isinstance(error, list) and len(error) > 0)):
+                    # ERROR_DATA_EXISTS means track already in playlist - not a fatal error
+                    if isinstance(error, dict) and 'ERROR_DATA_EXISTS' in error:
+                        if self.debug:
+                            print(f"  ⚠ Batch {batch_num}: Some tracks already exist (continuing)")
+                        successful_batches += 1
+                        continue
                     if self.debug:
                         print(f"  ✗ Batch {batch_num} failed: {error}")
-                    return False
+                    failed_batches += 1
+                    continue  # Continue with next batch instead of failing entirely
 
                 # Check for success result
                 if response_data.get('results') == True:
                     if self.debug:
                         print(f"  ✓ Batch {batch_num} added successfully")
-                elif self.debug:
-                    print(f"  ✓ Batch {batch_num} completed (no explicit success flag)")
+                    successful_batches += 1
+                else:
+                    if self.debug:
+                        print(f"  ✓ Batch {batch_num} completed (no explicit success flag)")
+                    successful_batches += 1
 
             except Exception as e:
                 if self.debug:
                     print(f"  Exception parsing response for batch {batch_num}: {e}")
                 # If we got HTTP 200, assume success
-                if response.status_code != 200:
-                    return False
+                if response.status_code == 200:
+                    successful_batches += 1
+                else:
+                    failed_batches += 1
 
+            # Add delay between batches to avoid rate limiting
+            if i + batch_size < len(track_ids):  # Don't delay after last batch
+                if self.debug:
+                    print(f"  Waiting {batch_delay}s before next batch...")
+                time.sleep(batch_delay)
+
+        total_batches = (len(track_ids) + batch_size - 1) // batch_size
         if self.debug:
-            print(f"\n[DEBUG] ✓ All batches completed successfully")
-        return True
+            print(f"\n[DEBUG] Batches: {successful_batches} successful, {failed_batches} failed out of {total_batches}")
+
+        # Return True if at least some batches succeeded
+        return successful_batches > 0
 
     def remove_tracks_from_playlist(self, playlist_id: str, track_ids: List[str]) -> bool:
         """Remove tracks from a playlist.
@@ -779,7 +804,7 @@ class DeezerClient:
         # the ARL token for an access token via Deezer's private API
         return self.arl_token or ""
 
-    def _api_call_with_retry(self, method: str, url: str, max_retries: int = 3, **kwargs) -> requests.Response:
+    def _api_call_with_retry(self, method: str, url: str, max_retries: int = 5, **kwargs) -> requests.Response:
         """Make API call with exponential backoff retry.
 
         Args:
@@ -794,20 +819,42 @@ class DeezerClient:
         Raises:
             Exception: If max retries exceeded
         """
+        base_delay = 2  # Base delay in seconds
+
         for attempt in range(max_retries):
             try:
                 response = self.session.request(method, url, **kwargs)
 
                 if response.status_code == 429:
                     # Rate limited, wait and retry
-                    retry_after = int(response.headers.get('Retry-After', 2 ** attempt))
+                    retry_after = int(response.headers.get('Retry-After', base_delay * (2 ** attempt)))
+                    if self.debug:
+                        print(f"  [RATE LIMIT] HTTP 429 - waiting {retry_after}s before retry {attempt + 1}/{max_retries}")
                     time.sleep(retry_after)
                     continue
 
                 if response.status_code >= 500:
                     # Server error, retry with backoff
-                    time.sleep(2 ** attempt)
+                    wait_time = base_delay * (2 ** attempt)
+                    if self.debug:
+                        print(f"  [SERVER ERROR] {response.status_code} - waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
+                    time.sleep(wait_time)
                     continue
+
+                # Check for quota limit errors in JSON response (Deezer returns these as 200 OK)
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        error = data.get('error', {})
+                        if isinstance(error, dict) and error.get('code') == 4:
+                            # Quota limit exceeded - wait longer and retry
+                            wait_time = base_delay * (3 ** attempt)  # Longer backoff for quota
+                            if self.debug:
+                                print(f"  [QUOTA LIMIT] Code 4 - waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
+                            time.sleep(wait_time)
+                            continue
+                    except (ValueError, KeyError):
+                        pass  # Not JSON or no error field, continue normally
 
                 response.raise_for_status()
                 return response
@@ -815,6 +862,9 @@ class DeezerClient:
             except RequestException as e:
                 if attempt == max_retries - 1:
                     raise
-                time.sleep(2 ** attempt)
+                wait_time = base_delay * (2 ** attempt)
+                if self.debug:
+                    print(f"  [REQUEST ERROR] {e} - waiting {wait_time}s before retry {attempt + 1}/{max_retries}")
+                time.sleep(wait_time)
 
         raise Exception(f"Max retries exceeded for {method} {url}")
