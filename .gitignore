@@ -71,3 +71,4 @@ conflicts.log
 # Distribution
 dist/
 *.whl
+.cache
