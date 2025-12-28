@@ -11,6 +11,7 @@ import time
 
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from musicdiff.matcher import TrackMatcher
+from musicdiff.ui import Icons
 
 
 class SyncMode(Enum):
@@ -98,7 +99,7 @@ class SyncEngine:
             to_delete = []
 
             # Check what needs to be created/updated
-            self.ui.print_info("🔍 Checking playlist status on Deezer...")
+            self.ui.print_info(f"{Icons.SEARCH} Checking playlist status on Deezer...")
 
             for playlist_info in selected:
                 spotify_id = playlist_info['spotify_id']
@@ -292,7 +293,7 @@ class SyncEngine:
                 )
 
             # Sync each selected playlist
-            self.ui.print_info(f"\n🔄 Starting sync of {len(spotify_playlists)} playlists...\n")
+            self.ui.print_info(f"\n{Icons.SYNC} Starting sync of {len(spotify_playlists)} playlists...\n")
 
             with self.ui.create_progress("Syncing playlists") as progress:
                 task = progress.add_task("Processing...", total=len(spotify_playlists))
@@ -302,7 +303,7 @@ class SyncEngine:
                         progress.update(
                             task,
                             completed=i-1,
-                            description=f"🎶 Syncing: {sp_playlist.name[:40]}... ({i}/{len(spotify_playlists)})"
+                            description=f"{Icons.SYNC} Syncing: {sp_playlist.name[:40]}... ({i}/{len(spotify_playlists)})"
                         )
 
                         # Check if already synced to Deezer
@@ -429,7 +430,7 @@ class SyncEngine:
         playlists = []
         total = len(playlist_ids)
 
-        self.ui.print_info(f"🎵 Fetching {total} playlists from Spotify...")
+        self.ui.print_info(f"{Icons.MUSIC} Fetching {total} playlists from Spotify...")
 
         with self.ui.create_progress("Fetching playlists") as progress:
             task = progress.add_task("Loading...", total=total)
@@ -443,7 +444,7 @@ class SyncEngine:
                         progress.update(
                             task,
                             completed=i,
-                            description=f"🎵 Fetching: {playlist.name[:40]}... ({i}/{total})"
+                            description=f"{Icons.MUSIC} Fetching: {playlist.name[:40]}... ({i}/{total})"
                         )
                     else:
                         progress.update(task, advance=1)

@@ -19,6 +19,34 @@ from questionary import Style
 import os
 
 
+class Icons:
+    """Standardized icons and emojis for consistent UI."""
+
+    # Status indicators
+    SUCCESS = "✓"
+    ERROR = "✗"
+    WARNING = "⚠"
+    INFO = "→"
+    PENDING = "○"
+    DONE = "●"
+    SKIP = "⊘"
+
+    # Action symbols
+    ADD = "+"
+    UPDATE = "~"
+    DELETE = "-"
+
+    # Action emojis (use consistently!)
+    MUSIC = "🎵"           # Playlist/track operations
+    SYNC = "🔄"            # Sync operations
+    DOWNLOAD = "⬇"         # Download operations
+    SEARCH = "🔍"          # Search/scan operations
+    ROCKET = "🚀"          # Start of major operation
+    SPARKLE = "✨"         # Completion celebration
+    SPOTIFY = "💚"         # Spotify-specific
+    DEEZER = "💜"          # Deezer-specific
+
+
 class UI:
     """Terminal-based user interface."""
 
@@ -51,7 +79,7 @@ class UI:
         # Display header
         self.console.print()
         self.console.print(Panel.fit(
-            "[bold cyan]🎵 Select Playlists to Sync[/bold cyan]\n\n"
+            f"[bold cyan]{Icons.MUSIC} Select Playlists to Sync[/bold cyan]\n\n"
             "Use ↑↓ arrows to navigate, SPACE to select/deselect, ENTER to confirm",
             border_style="cyan"
         ))
@@ -189,7 +217,7 @@ class UI:
         """
         self.console.print()
         self.console.print(Panel.fit(
-            "[bold magenta]📊 Sync Preview: Spotify → Deezer[/bold magenta]\n\n"
+            f"[bold magenta]{Icons.SYNC} Sync Preview: Spotify → Deezer[/bold magenta]\n\n"
             "Here's what will happen when you sync",
             border_style="magenta"
         ))
@@ -231,27 +259,27 @@ class UI:
 
         # Display results
         if to_create:
-            self.console.print(f"[bold green]✨ Will Create ({len(to_create)} playlists):[/bold green]")
+            self.console.print(f"[bold green]{Icons.SPARKLE} Will Create ({len(to_create)} playlists):[/bold green]")
             for name, count in to_create[:10]:
-                self.console.print(f"  [green]+[/green] {name} [dim]({count} tracks)[/dim]")
+                self.console.print(f"  [green]{Icons.ADD}[/green] {name} [dim]({count} tracks)[/dim]")
             if len(to_create) > 10:
                 self.console.print(f"  [dim]... and {len(to_create) - 10} more[/dim]")
             self.console.print()
 
         if to_update:
-            self.console.print(f"[bold yellow]🔄 Will Update ({len(to_update)} playlists):[/bold yellow]")
+            self.console.print(f"[bold yellow]{Icons.SYNC} Will Update ({len(to_update)} playlists):[/bold yellow]")
             self.console.print("[dim]  (Playlists with same name found on Deezer)[/dim]")
             for name, count in to_update[:10]:
-                self.console.print(f"  [yellow]~[/yellow] {name} [dim]({count} tracks)[/dim]")
+                self.console.print(f"  [yellow]{Icons.UPDATE}[/yellow] {name} [dim]({count} tracks)[/dim]")
             if len(to_update) > 10:
                 self.console.print(f"  [dim]... and {len(to_update) - 10} more[/dim]")
             self.console.print()
 
         if already_synced:
-            self.console.print(f"[bold cyan]✓ Already Synced ({len(already_synced)} playlists):[/bold cyan]")
+            self.console.print(f"[bold cyan]{Icons.SUCCESS} Already Synced ({len(already_synced)} playlists):[/bold cyan]")
             self.console.print("[dim]  (Will check for changes and update if needed)[/dim]")
             for name, count, deezer_id in already_synced[:5]:
-                self.console.print(f"  [cyan]●[/cyan] {name} [dim]({count} tracks)[/dim]")
+                self.console.print(f"  [cyan]{Icons.DONE}[/cyan] {name} [dim]({count} tracks)[/dim]")
             if len(already_synced) > 5:
                 self.console.print(f"  [dim]... and {len(already_synced) - 5} more[/dim]")
             self.console.print()
@@ -278,30 +306,30 @@ class UI:
         """
         self.console.print()
         self.console.print(Panel.fit(
-            "[bold cyan]🔄 Sync Preview[/bold cyan]\n\n"
+            f"[bold cyan]{Icons.SYNC} Sync Preview[/bold cyan]\n\n"
             "Review what will happen when you sync",
             border_style="cyan"
         ))
         self.console.print()
 
         if to_create:
-            self.console.print(f"[bold green]✨ Will Create on Deezer ({len(to_create)} playlists):[/bold green]")
+            self.console.print(f"[bold green]{Icons.SPARKLE} Will Create on Deezer ({len(to_create)} playlists):[/bold green]")
             for name, track_count in to_create:
-                self.console.print(f"  [green]+[/green] {name} [dim]({track_count} tracks)[/dim]")
+                self.console.print(f"  [green]{Icons.ADD}[/green] {name} [dim]({track_count} tracks)[/dim]")
             self.console.print()
 
         if to_update:
-            self.console.print(f"[bold yellow]🔄 Will Update on Deezer ({len(to_update)} playlists):[/bold yellow]")
+            self.console.print(f"[bold yellow]{Icons.SYNC} Will Update on Deezer ({len(to_update)} playlists):[/bold yellow]")
             self.console.print("[dim]  (Incremental - only missing tracks will be added)[/dim]")
             for name, track_count, deezer_id in to_update:
-                self.console.print(f"  [yellow]~[/yellow] {name} [dim]({track_count} missing)[/dim]")
+                self.console.print(f"  [yellow]{Icons.UPDATE}[/yellow] {name} [dim]({track_count} missing)[/dim]")
             self.console.print()
 
         if to_delete:
-            self.console.print(f"[bold red]🗑️  Will Delete from Deezer ({len(to_delete)} playlists):[/bold red]")
+            self.console.print(f"[bold red]{Icons.DELETE} Will Delete from Deezer ({len(to_delete)} playlists):[/bold red]")
             self.console.print("[dim]  (These playlists are no longer selected)[/dim]")
             for name, deezer_id in to_delete:
-                self.console.print(f"  [red]-[/red] {name}")
+                self.console.print(f"  [red]{Icons.DELETE}[/red] {name}")
             self.console.print()
 
         if not (to_create or to_update or to_delete):
@@ -349,21 +377,23 @@ class UI:
         if not (to_create or to_update or to_delete):
             self.console.print("[dim]No changes to make - everything is in sync[/dim]\n")
 
-    def create_progress(self, description: str) -> Progress:
-        """Create and return a progress bar.
+    def create_progress(self, description: str = "Processing...") -> Progress:
+        """Create and return a standardized progress bar.
 
         Args:
-            description: Progress description
+            description: Progress description (unused, for API compatibility)
 
         Returns:
             Progress context manager
         """
         return Progress(
             SpinnerColumn(),
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(),
+            TextColumn("[bold]{task.description}[/bold]"),
+            BarColumn(complete_style="green", finished_style="green"),
             TaskProgressColumn(),
-            console=self.console
+            TextColumn("[dim]{task.completed}/{task.total}[/dim]"),
+            console=self.console,
+            transient=True
         )
 
     def confirm(self, message: str, default: bool = False) -> bool:
@@ -380,19 +410,32 @@ class UI:
 
     def print_success(self, message: str):
         """Print a success message."""
-        self.console.print(f"[green]✓ {message}[/green]")
+        self.console.print(f"[green]{Icons.SUCCESS}[/green] {message}")
 
     def print_error(self, message: str):
         """Print an error message."""
-        self.console.print(f"[red]✗ {message}[/red]")
+        self.console.print(f"[red]{Icons.ERROR}[/red] {message}")
 
     def print_warning(self, message: str):
         """Print a warning message."""
-        self.console.print(f"[yellow]⚠ {message}[/yellow]")
+        self.console.print(f"[yellow]{Icons.WARNING}[/yellow] {message}")
 
     def print_info(self, message: str):
         """Print an info message."""
-        self.console.print(f"[blue]ℹ {message}[/blue]")
+        self.console.print(f"[dim]{Icons.INFO}[/dim] {message}")
+
+    def print_status(self, label: str, value, color: str = ""):
+        """Print a status line (label: value).
+
+        Args:
+            label: Status label
+            value: Status value
+            color: Optional color for the label
+        """
+        if color:
+            self.console.print(f"  [{color}]{label}:[/{color}] {value}")
+        else:
+            self.console.print(f"  {label}: {value}")
 
     def show_status(self, title: str, items: dict):
         """Show status information in a table.

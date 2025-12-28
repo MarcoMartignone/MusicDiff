@@ -27,7 +27,7 @@ from musicdiff.spotify import SpotifyClient
 from musicdiff.deezer import DeezerClient
 from musicdiff.sync import SyncEngine, SyncMode
 from musicdiff.scheduler import SyncDaemon
-from musicdiff.ui import UI
+from musicdiff.ui import UI, Icons
 from musicdiff.downloader import (
     DeemixDownloader,
     DeemixNotFoundError,
@@ -206,7 +206,7 @@ def setup():
     clear_screen()
     console.print()
     console.print(Panel.fit(
-        "[bold cyan]🎵 MusicDiff Setup[/bold cyan]\n\n"
+        f"[bold cyan]{Icons.MUSIC} MusicDiff Setup[/bold cyan]\n\n"
         "Configure your API credentials",
         border_style="cyan"
     ))
@@ -374,7 +374,7 @@ def setup():
         clear_screen()
         console.print()
         console.print(Panel.fit(
-            "[bold magenta]🎵 Deezer Setup[/bold magenta]\n\n"
+            f"[bold magenta]{Icons.DEEZER} Deezer Setup[/bold magenta]\n\n"
             "Extract your ARL token from Deezer",
             border_style="magenta"
         ))
@@ -411,7 +411,7 @@ def setup():
         clear_screen()
         console.print()
         console.print(Panel.fit(
-            "[bold magenta]🎵 Deezer - Enter ARL Token[/bold magenta]",
+            f"[bold magenta]{Icons.DEEZER} Deezer - Enter ARL Token[/bold magenta]",
             border_style="magenta"
         ))
         console.print()
@@ -518,7 +518,7 @@ def setup():
 def init():
     """Initialize MusicDiff and authenticate with music platforms."""
     console.print()
-    console.print("[bold cyan]🎵 Initializing MusicDiff...[/bold cyan]\n")
+    console.print(f"[bold cyan]{Icons.MUSIC} Initializing MusicDiff...[/bold cyan]\n")
 
     import time
 
@@ -723,7 +723,7 @@ def select():
             TextColumn("[bold cyan]{task.description}"),
             console=console
         ) as progress:
-            task = progress.add_task("🎵 Fetching your Spotify playlists...", total=None)
+            task = progress.add_task(f"{Icons.MUSIC} Fetching your Spotify playlists...", total=None)
 
             # Fast fetch - just metadata, no tracks!
             playlist_dicts = spotify.fetch_playlists_metadata()
@@ -746,16 +746,9 @@ def select():
         console.print("[dim]Create some playlists on Spotify first![/dim]")
         return
 
-    # Show count with fun message
+    # Show count
     count = len(playlist_dicts)
-    if count == 1:
-        console.print(f"[cyan]Found {count} playlist! 🎵[/cyan]")
-    elif count < 10:
-        console.print(f"[cyan]Found {count} playlists! 🎶[/cyan]")
-    elif count < 50:
-        console.print(f"[cyan]Wow! Found {count} playlists! 🎸[/cyan]")
-    else:
-        console.print(f"[cyan]Holy moly! {count} playlists! You're a music legend! 🎹🎺🎻[/cyan]")
+    console.print(f"[cyan]{Icons.MUSIC} Found {count} playlist{'s' if count != 1 else ''}[/cyan]")
     console.print()
 
     # Get current selections from database
@@ -786,12 +779,7 @@ def select():
         return
 
     # Show selection confirmation
-    if selected_count == 1:
-        console.print(f"\n[green]✓ Got it! 1 playlist ready to sync[/green] 🎵")
-    elif selected_count == len(playlist_dicts):
-        console.print(f"\n[green]✓ All {selected_count} playlists selected! Going for the full collection, nice![/green] 🎸")
-    else:
-        console.print(f"\n[green]✓ Selection saved: {selected_count}/{len(playlist_dicts)} playlists ready[/green] 🎶")
+    console.print(f"\n[green]{Icons.SUCCESS}[/green] Selection saved: {selected_count}/{len(playlist_dicts)} playlists ready to sync")
 
     # Fetch Deezer playlists and show diff
     try:
@@ -807,7 +795,7 @@ def select():
                     deezer_task,
                     completed=current,
                     total=total,
-                    description=f"🎧 Loading Deezer playlists: {name[:40]}..."
+                    description=f"{Icons.DEEZER} Loading Deezer playlists: {name[:40]}..."
                 )
 
         with Progress(
@@ -818,7 +806,7 @@ def select():
             console=console
         ) as progress:
             deezer_progress = progress
-            deezer_task = progress.add_task("🎧 Fetching Deezer playlists...", total=None)
+            deezer_task = progress.add_task(f"{Icons.DEEZER} Fetching Deezer playlists...", total=None)
 
             # Fast fetch - just metadata, no tracks!
             deezer_playlists = deezer.fetch_library_playlists_metadata(
@@ -899,10 +887,10 @@ def sync(dry_run):
     console.print()
 
     if dry_run:
-        console.print("[dim]🔍 DRY RUN MODE - Previewing changes (no actual sync)[/dim]\n")
+        console.print(f"[dim]{Icons.SEARCH} DRY RUN MODE - Previewing changes (no actual sync)[/dim]\n")
         mode = SyncMode.DRY_RUN
     else:
-        console.print("[bold cyan]🚀 Starting playlist sync to Deezer...[/bold cyan]\n")
+        console.print(f"[bold cyan]{Icons.ROCKET} Starting playlist sync to Deezer...[/bold cyan]\n")
         mode = SyncMode.NORMAL
 
     # Get sync engine and run sync
@@ -916,18 +904,14 @@ def sync(dry_run):
             ui = UI()
             ui.show_sync_summary(result)
 
-            # Fun messages based on result
+            # Result message
             if result.success:
                 if result.total_synced == 0:
-                    console.print("[cyan]Everything's already in sync! Nothing to do here. 😎[/cyan]")
-                elif result.total_synced == 1:
-                    console.print("[green]🎵 Playlist synced! Your music is flowing to Deezer![/green]")
-                elif result.total_synced < 5:
-                    console.print("[green]🎶 Nice! Your playlists are now on Deezer![/green]")
+                    console.print(f"[cyan]{Icons.SUCCESS} Everything's already in sync![/cyan]")
                 else:
-                    console.print("[green]🎸 Boom! All your playlists are synced! Rock on! 🤘[/green]")
+                    console.print(f"[green]{Icons.SPARKLE} Sync complete! {result.total_synced} playlists synced to Deezer[/green]")
             else:
-                console.print("[yellow]⚠ Sync completed with some issues - check the errors above[/yellow]")
+                console.print(f"[yellow]{Icons.WARNING} Sync completed with some issues - check the errors above[/yellow]")
 
     except Exception as e:
         console.print(f"\n[red]✗ Sync failed: {e}[/red]")
@@ -1340,7 +1324,7 @@ except Exception as e:
 
     if not download_path:
         # First time - prompt for path
-        console.print("[bold cyan]🎵 First-time Download Setup[/bold cyan]\n")
+        console.print(f"[bold cyan]{Icons.DOWNLOAD} First-time Download Setup[/bold cyan]\n")
         console.print("Where should downloaded music be saved?\n")
 
         default_path = str(get_default_download_path())
@@ -1834,7 +1818,7 @@ except Exception as e:
         console.print("\n[dim]Run 'musicdiff download --retry-failed' to retry[/dim]")
 
     if stats.completed > 0:
-        console.print(f"\n[green]🎵 {stats.completed} tracks saved to {download_path}[/green]")
+        console.print(f"\n[green]{Icons.MUSIC} {stats.completed} tracks saved to {download_path}[/green]")
 
         # Auto-run scan and metadata update after successful download
         if not no_auto_scan:
@@ -2205,7 +2189,7 @@ def nts_import(nts_url, dry_run, prefix):
     console.print()
 
     if dry_run:
-        console.print("[yellow]🔍 Dry run - no playlist created[/yellow]")
+        console.print(f"[yellow]{Icons.SEARCH} Dry run - no playlist created[/yellow]")
         return
 
     if not matched:
