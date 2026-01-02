@@ -1,63 +1,43 @@
 # MusicDiff
 
-> Simple one-way playlist transfer from Spotify to Deezer + NTS Radio show importer
+> Spotify playlist sync, Deezer downloading, and Rekordbox DJ library integration
 
-MusicDiff keeps your Spotify playlists synced to Deezer. Select which playlists you want to mirror, and MusicDiff will automatically create and update them on Deezer to match your Spotify playlists exactly.
-
-**NEW**: Import NTS Radio show tracklists directly to Spotify playlists!
+MusicDiff is a complete workflow for DJs: sync Spotify playlists to Deezer, download high-quality tracks, and automatically organize them in Rekordbox with smart tags.
 
 ## Features
 
-### Spotify ↔ Deezer Sync
-- **One-Way Sync**: Spotify → Deezer playlist transfer
-- **Playlist Selection**: Choose which Spotify playlists to sync
-- **Smart Sync**: Automatically detects when playlists are already in sync and skips unnecessary updates
-- **No Duplicates**: Finds and reuses existing Deezer playlists instead of creating duplicates
-- **Accurate Preview**: Shows exactly what will happen before you confirm
-- **Full Overwrite**: Deezer playlists mirror Spotify playlists exactly
-- **Smart Track Matching**: ISRC-based track matching across platforms
-- **Clean Deselection**: Remove playlists from Deezer when deselected
-- **Sync History**: Track all syncs and changes over time
+### Spotify to Deezer Sync
+- **One-Way Sync**: Spotify → Deezer playlist mirroring
+- **Smart Sync**: Skips playlists already in sync
+- **ISRC Matching**: Accurate cross-platform track matching
+- **No Duplicates**: Finds and reuses existing Deezer playlists
 
-### NTS Radio Import (NEW! 🎵)
+### Track Downloading
+- **High-Quality Downloads**: Download tracks via Deemix (320kbps MP3)
+- **Batch Processing**: Download entire playlists at once
+- **Metadata Application**: Automatically sets playlist name (TCOM), track position (TRCK), and compilation flag (TCMP)
+- **Resume Support**: Tracks download status, retries failed downloads
+
+### Rekordbox Integration
+- **My Tags**: Automatically creates tags from playlist names
+- **Smart Playlists**: Auto-generates smart playlists filtered by tag
+- **Batch Tagging**: Apply tags to thousands of tracks efficiently
+- **Path Resolution**: Handles symlinks and cloud storage paths
+
+### NTS Radio Import
 - **Instant Import**: Create Spotify playlists from NTS Live radio shows
-- **High Accuracy**: 90%+ track match rate using smart search
-- **Progress Tracking**: Beautiful progress bars and status updates
-- **Dry Run Mode**: Preview before creating playlists
-- **Custom Naming**: Configurable playlist name prefixes
+- **High Accuracy**: 90%+ track match rate
 
 ## Quick Start
 
-### One-Command Setup 🚀
-
 ```bash
 source venv/bin/activate
-musicdiff setup
-```
-
-This **interactive wizard** will:
-1. ✅ Guide you step-by-step through creating Spotify API credentials
-2. ✅ Set up Deezer authentication (requires ARL token from browser)
-3. ✅ Test your credentials automatically
-4. ✅ Save everything to `.env` file
-5. ✅ Get you ready to sync in 5 minutes!
-
-No need to read documentation or manually configure anything - just follow the prompts!
-
-### After Setup
-
-```bash
-# Load credentials
-source ~/Documents/MusicDiff/.musicdiff/.env
-
-# Initialize database
-musicdiff init
-
-# Select playlists to sync
-musicdiff select
-
-# Start syncing!
-musicdiff sync
+musicdiff setup      # Interactive credential wizard
+musicdiff init       # Initialize database
+musicdiff select     # Choose playlists to sync
+musicdiff sync       # Sync to Deezer
+musicdiff download   # Download tracks
+musicdiff apply-tags # Tag tracks in Rekordbox
 ```
 
 ## Usage
@@ -65,137 +45,70 @@ musicdiff sync
 ### Select Playlists
 
 ```bash
-# Interactive checkbox selection
 musicdiff select
 ```
 
-Choose which Spotify playlists to sync to Deezer. Use arrow keys to navigate, SPACE to select/deselect, and ENTER to confirm.
-
-### View Your Playlists
-
-```bash
-# Show all playlists with sync status
-musicdiff list
-```
-
-See which playlists are selected for sync and when they were last synced.
+Interactive selection of which Spotify playlists to sync and download.
 
 ### Sync to Deezer
 
 ```bash
-# Perform sync
 musicdiff sync
-
-# Dry run (preview what would be synced)
-musicdiff sync --dry-run
+musicdiff sync --dry-run  # Preview changes
 ```
 
-**What happens during sync:**
-- Checks if playlists exist on Deezer (finds existing ones by name to avoid duplicates)
-- Compares Spotify vs Deezer track lists to detect changes
-- If playlists are already identical: Skips sync entirely (nothing to do!)
-- If changes detected:
-  - Creates playlists on Deezer (if they don't exist) as **private playlists**
-  - Updates existing Deezer playlists to match Spotify exactly (full overwrite)
-  - Deselected playlists are deleted from Deezer
-- All tracks are matched using ISRC codes (International Standard Recording Code)
+### Download Tracks
+
+```bash
+musicdiff download
+musicdiff download --dry-run           # Preview what would download
+musicdiff download --playlist "name"   # Download specific playlist
+musicdiff download --retry-failed      # Retry failed downloads
+```
+
+Downloads tracks to the configured output directory, organized by playlist folders.
+
+### Apply Rekordbox Tags
+
+```bash
+musicdiff apply-tags
+musicdiff apply-tags --dry-run         # Preview tagging
+musicdiff apply-tags --playlist "name" # Tag specific playlist
+```
+
+Creates "My Tags" in Rekordbox matching playlist names, then applies tags to all downloaded tracks. Also creates smart playlists that filter by each tag.
+
+### Import NTS Radio Shows
+
+```bash
+musicdiff nts-import "https://www.nts.live/shows/show-name/episodes/episode-name"
+musicdiff nts-import "URL" --dry-run
+```
 
 ### View Status
 
 ```bash
-# See sync status
-musicdiff status
-
-# View sync history
-musicdiff log
+musicdiff list    # Show playlists with sync status
+musicdiff status  # View overall sync status
+musicdiff log     # View sync history
 ```
-
-### Import NTS Radio Shows 🎵
-
-```bash
-# Import an NTS show to Spotify
-musicdiff nts-import "https://www.nts.live/shows/show-name/episodes/episode-name"
-
-# Preview without creating (dry run)
-musicdiff nts-import "URL" --dry-run
-
-# Custom playlist name prefix
-musicdiff nts-import "URL" --prefix "NTS Radio: "
-```
-
-**What happens during import:**
-1. Fetches the NTS episode metadata and tracklist
-2. Searches for each track on Spotify
-3. Creates a new private Spotify playlist with matched tracks
-4. Shows summary with match rate and any skipped tracks
-
-**Example:**
-```bash
-musicdiff nts-import "https://www.nts.live/shows/the-breakfast-show-flo/episodes/the-breakfast-show-flo-27th-october-2025"
-
-# Output:
-# ✓ Episode: The NTS Breakfast Show w/ Flo
-#   Tracks: 16
-# ✓ Connected to Spotify
-# Matching tracks... ━━━━━━━━━━━━━━━━━━━ 100%
-# Results:
-#   Matched: 16/16 tracks (100.0%)
-#   Skipped: 0 tracks
-# ✓ Playlist created successfully!
-#   https://open.spotify.com/playlist/...
-```
-
-## How It Works
-
-MusicDiff performs an intelligent one-way sync from Spotify to Deezer:
-
-```
-1. Check playlist status on Deezer
-   - Verify if playlists exist (by database ID)
-   - If deleted, search for existing playlist with same name
-   - Avoid creating duplicates
-
-2. Compare playlists (if only updates pending)
-   - Fetch both Spotify and Deezer versions
-   - Compare track counts (fast check)
-   - Compare ISRCs in order (accurate check)
-   - Skip if playlists are already identical
-
-3. For each playlist needing changes:
-   - If playlist doesn't exist: Create it (as private playlist)
-   - If playlist exists: Update it (full overwrite)
-
-4. Delete deselected playlists from Deezer
-
-5. Update local database with sync mappings
-```
-
-**Track Matching:**
-- Uses ISRC (International Standard Recording Code) for accurate cross-platform matching
-- Searches Deezer for matching track by ISRC
-- Caches successful matches in database for faster future syncs
-- Skips tracks without ISRC codes (reports as unmatched)
 
 ## Configuration
 
-### Easy Setup (Recommended)
+### Easy Setup
 
-Just run `musicdiff setup` and follow the wizard! It handles everything automatically.
+```bash
+musicdiff setup
+```
+
+Interactive wizard that configures:
+- Spotify API credentials (Client ID, Secret, Redirect URI)
+- Deezer ARL token (from browser cookies)
+- Download output path
 
 ### Manual Setup
 
-If you prefer to set up manually:
-
-**Required:**
-- Spotify Client ID & Secret (free, 5 minutes)
-  - Create app at https://developer.spotify.com/dashboard
-  - Set redirect URI to: `http://127.0.0.1:8888/callback`
-- Deezer ARL token (free with Deezer account)
-  - Login to deezer.com in browser
-  - Open Developer Tools → Application → Cookies
-  - Copy value of `arl` cookie
-
-Create `.musicdiff/.env` file:
+Create `.musicdiff/.env`:
 ```bash
 export SPOTIFY_CLIENT_ID="your_client_id"
 export SPOTIFY_CLIENT_SECRET="your_client_secret"
@@ -203,127 +116,82 @@ export SPOTIFY_REDIRECT_URI="http://127.0.0.1:8888/callback"
 export DEEZER_ARL="your_arl_token"
 ```
 
+**Getting credentials:**
+- **Spotify**: Create app at https://developer.spotify.com/dashboard
+- **Deezer ARL**: Login to deezer.com → Developer Tools → Application → Cookies → `arl`
+
 ## Architecture
 
 ```
 musicdiff/
-├── cli.py          # Command-line interface
+├── cli.py          # Click CLI commands
 ├── spotify.py      # Spotify API client
 ├── deezer.py       # Deezer API client
-├── nts.py          # NTS Radio API client (NEW!)
-├── database.py     # SQLite state management
 ├── sync.py         # Sync orchestration
-├── matcher.py      # Cross-platform track matching
-├── ui.py           # Terminal UI components
+├── downloader.py   # Deemix track downloading
+├── rekordbox.py    # Rekordbox My Tags integration
+├── database.py     # SQLite state management
+├── matcher.py      # ISRC-based track matching
+├── nts.py          # NTS Radio API client
+├── ui.py           # Terminal UI (rich)
 └── scheduler.py    # Daemon/scheduled syncs
 ```
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture documentation.
+## Workflow
 
-## Documentation
-
-Comprehensive documentation available in the `docs/` directory:
-
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - System design and data flow
-- [CLI.md](docs/CLI.md) - Command-line interface reference
-- [SPOTIFY.md](docs/SPOTIFY.md) - Spotify API integration
-- [DEEZER.md](docs/DEEZER.md) - Deezer API integration
-- [DATABASE.md](docs/DATABASE.md) - Database schema and operations
-- [SYNC_LOGIC.md](docs/SYNC_LOGIC.md) - Sync orchestration
-- [TRACK_MATCHING.md](docs/TRACK_MATCHING.md) - Cross-platform track matching
-- [UI_COMPONENTS.md](docs/UI_COMPONENTS.md) - Terminal UI components
-- [SCHEDULING.md](docs/SCHEDULING.md) - Daemon and scheduled syncs
-- [NTS_IMPORT_PHASE_1.md](docs/NTS_IMPORT_PHASE_1.md) - NTS API client implementation
-- [NTS_IMPORT_PHASE_2.md](docs/NTS_IMPORT_PHASE_2.md) - Spotify track search implementation
-- [NTS_IMPORT_PHASE_3.md](docs/NTS_IMPORT_PHASE_3.md) - CLI command and playlist creation
+```
+Spotify Playlists
+       ↓
+   musicdiff sync
+       ↓
+Deezer Playlists
+       ↓
+  musicdiff download
+       ↓
+Local MP3 Files (with metadata)
+       ↓
+  musicdiff apply-tags
+       ↓
+Rekordbox Library (tagged + smart playlists)
+```
 
 ## Development
 
-### Setup Development Environment
-
 ```bash
-# Install development dependencies
 pip install -r requirements.txt
 pip install -e ".[dev]"
 
-# Run tests
-pytest
-
-# Format code
-black musicdiff/
-
-# Lint
-ruff check musicdiff/
-
-# Type check
-mypy musicdiff/
-```
-
-### Project Structure
-
-```
-MusicDiff/
-├── musicdiff/          # Main package
-├── docs/               # Documentation
-├── tests/              # Test suite
-├── README.md
-├── pyproject.toml
-└── requirements.txt
+pytest              # Run tests
+black musicdiff/    # Format code
+ruff check musicdiff/  # Lint
+mypy musicdiff/     # Type check
 ```
 
 ## Roadmap
 
-- [x] Basic Spotify integration
-- [x] Deezer integration (private API with ARL authentication)
-- [x] One-way playlist sync with full overwrite
-- [x] Interactive playlist selection
-- [x] Smart sync (skip when already in sync)
-- [x] Duplicate prevention (find and reuse existing playlists)
-- [x] Accurate sync preview
-- [x] NTS Radio show import to Spotify
+- [x] Spotify → Deezer sync
+- [x] Track downloading via Deemix
+- [x] Rekordbox My Tags integration
+- [x] NTS Radio import
+- [x] Metadata application (TCOM, TRCK, TCMP)
+- [x] Smart playlist creation
 - [ ] Daemon mode for automatic syncs
-- [ ] Web UI for visualization
-- [ ] Support for liked songs sync
-- [ ] Support for albums sync
-- [ ] Export/import to portable format
-- [ ] Import from other radio stations (BBC Radio, Rinse FM, etc.)
+- [ ] Web UI
 
 ## Known Limitations
 
-1. **Playlists Only**: Currently only syncs playlists (not liked songs or albums)
-2. **One-Way Sync**: Changes on Deezer are not synced back to Spotify
-3. **Deezer ARL Token**: Uses browser cookie for authentication; may expire and require periodic re-extraction
-4. **Track Matching**: Not all tracks have ISRC codes; tracks without ISRC are skipped
-5. **Rate Limits**: API rate limits may slow down large library syncs
-6. **Regional Availability**: Tracks may not be available in all regions on all platforms
-7. **Private Playlists Only**: Creates playlists as private on Deezer for reliability
-
-## Contributing
-
-Contributions welcome! Please read the documentation in `docs/` to understand the architecture.
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests
-5. Submit a pull request
+1. **One-Way Sync**: Spotify is source of truth
+2. **Deezer ARL Token**: May expire, requires periodic re-extraction
+3. **ISRC Required**: Tracks without ISRC codes are skipped
+4. **Rekordbox Closed**: Rekordbox must be closed when applying tags
 
 ## License
 
-MIT License - see LICENSE file for details
+MIT License
 
 ## Acknowledgments
 
-- Built with [spotipy](https://spotipy.readthedocs.io/) for Spotify API
-- Deezer integration using private API
-- Terminal UI powered by [rich](https://rich.readthedocs.io/)
-
-## Support
-
-For issues and questions:
-- Open an issue on [GitHub](https://github.com/MarcoMartignone/MusicDiff/issues)
-- Check the [documentation](docs/)
-
----
-
-**Note**: This is an early alpha version. Use at your own risk and always keep backups of your playlists!
+- [spotipy](https://spotipy.readthedocs.io/) - Spotify API
+- [deemix](https://gitlab.com/RemixDev/deemix-py) - Deezer downloading
+- [pyrekordbox](https://github.com/dylanljones/pyrekordbox) - Rekordbox database access
+- [rich](https://rich.readthedocs.io/) - Terminal UI
